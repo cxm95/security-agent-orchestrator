@@ -99,10 +99,12 @@ Before using CAO, install at least one supported CLI agent tool:
 | **Kiro CLI** (default) | [Provider docs](docs/kiro-cli.md) · [Installation](https://kiro.dev/docs/kiro-cli) | AWS credentials |
 | **Claude Code** | [Provider docs](docs/claude-code.md) · [Installation](https://docs.anthropic.com/en/docs/claude-code/getting-started) | Anthropic API key |
 | **Codex CLI** | [Provider docs](docs/codex-cli.md) · [Installation](https://github.com/openai/codex) | OpenAI API key |
+| **OpenCode** | [Provider docs](docs/opencode.md) · [Installation](https://opencode.ai) | Provider-specific API key |
 | **Gemini CLI** | [Provider docs](docs/gemini-cli.md) · [Installation](https://github.com/google-gemini/gemini-cli) | Google AI API key |
 | **Kimi CLI** | [Provider docs](docs/kimi-cli.md) · [Installation](https://platform.moonshot.cn/docs/kimi-cli) | Moonshot API key |
 | **GitHub Copilot CLI** | [Provider docs](docs/copilot-cli.md) · [Installation](https://github.com/features/copilot/cli) | GitHub auth |
 | **Q CLI** | [Installation](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line.html) | AWS credentials |
+| **Script** | Built-in — run arbitrary shell scripts | N/A |
 
 ## Quick Start
 
@@ -147,6 +149,7 @@ cao launch --agents code_supervisor
 cao launch --agents code_supervisor --provider kiro_cli
 cao launch --agents code_supervisor --provider claude_code
 cao launch --agents code_supervisor --provider codex
+cao launch --agents code_supervisor --provider opencode
 cao launch --agents code_supervisor --provider gemini_cli
 cao launch --agents code_supervisor --provider kimi_cli
 cao launch --agents code_supervisor --provider copilot_cli
@@ -483,13 +486,66 @@ provider: claude_code
 ---
 ```
 
-Valid values: `kiro_cli`, `claude_code`, `codex`, `q_cli`, `gemini_cli`, `kimi_cli`, `copilot_cli`.
+Valid values: `kiro_cli`, `claude_code`, `codex`, `opencode`, `q_cli`, `gemini_cli`, `kimi_cli`, `copilot_cli`, `script`.
 
 When a supervisor calls `assign` or `handoff`, CAO reads the worker's agent profile and uses the declared provider if present. If the key is missing or invalid, the worker falls back to the supervisor's provider.
 
 The `cao launch --provider` flag always takes precedence — it is treated as an explicit override and the profile's `provider` key is not consulted for the initial session.
 
 For ready-to-use examples, see [`examples/cross-provider/`](examples/cross-provider/).
+
+## Provider Features
+
+### Environment Variables
+
+All providers support setting custom environment variables before launching the CLI agent. Environment variables are applied via `export KEY=VALUE` in the tmux session before the provider command runs. Variable names are validated against `^[A-Za-z_][A-Za-z0-9_]*$` to prevent shell injection.
+
+### Auto-Approve / Yolo Mode
+
+Each provider enables auto-approve mode by default to skip interactive permission prompts:
+
+| Provider | Mechanism |
+|----------|-----------|
+| **Claude Code** | `--dangerously-skip-permissions` flag |
+| **Codex CLI** | `--full-auto` flag |
+| **OpenCode** | `OPENCODE_CONFIG_CONTENT='{"permission":"allow"}'` env var |
+| **Others** | Provider defaults |
+
+### Session ID Extraction (OpenCode)
+
+The OpenCode provider supports graceful exit with session ID extraction. When exiting via Ctrl-C, OpenCode prints a session restore hint:
+
+```
+Session   Greeting
+Continue  opencode -s ses_2c57b2436ffepiOds7uuqq2hHd
+```
+
+The `graceful_exit()` method sends Ctrl-C, waits for the shell prompt, and parses the `ses_xxx` identifier for session resumption.
+
+### Script Provider
+
+The Script provider allows running arbitrary shell scripts as "agents" within the CAO framework. This is useful for tasks that don't require an AI coding agent, such as running build pipelines, deployment scripts, or data processing workflows.
+
+```python
+from cli_agent_orchestrator.providers.manager import provider_manager
+
+# Create a script provider directly
+provider = provider_manager.create_script_provider(
+    terminal_id="my-script-1",
+    session_name="cao-scripts",
+    window_name="build",
+    script_path="/path/to/my-script.sh",
+    script_args=["--verbose", "--output", "/tmp/results"],
+    env_vars={"MY_VAR": "value"},
+)
+provider.initialize()
+```
+
+Key features:
+- **Status detection**: Monitors shell prompt (`$` / `#`) visibility to determine PROCESSING vs COMPLETED
+- **Output extraction**: Captures script stdout/stderr from the terminal
+- **Environment variables**: Supports custom env vars passed to the script
+- **Same lifecycle**: Follows the same `initialize()` → `get_status()` → `extract_last_message_from_script()` → `cleanup()` pattern as CLI agent providers
 
 ## Security
 

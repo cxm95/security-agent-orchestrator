@@ -1,0 +1,42 @@
+
+  ┃  write a python fibonacci function with memoization, explain each line                                
+  ┃                                                                                                       
+                                                                                                          
+  ┃  Thinking: I need to write a fibonacci function with memoization and explain each line                
+                                                                                                          
+  Here's a Python fibonacci function with memoization:                                                    
+                                                                                                          
+  ```python                                                                                               
+  from functools import lru_cache                                                                         
+                                                                                                          
+  @lru_cache(maxsize=None)  # Unlimited cache - stores all computed values                                
+  def fibonacci(n):                                                                                       
+      """Return the nth Fibonacci number using memoization."""                                            
+      if n < 0:                     # Guard against negative input                                        
+          raise ValueError("n must be non-negative")                                                      
+      if n <= 1:                    # Base cases: F(0) = 0, F(1) = 1                                      
+          return n                                                                                        
+      return fibonacci(n - 1) + fibonacci(n - 2)  # Recursive case with cached results                   
+  ```                                                                                                     
+                                                                                                          
+  **Line-by-line explanation:**                                                                           
+                                                                                                          
+  1. `from functools import lru_cache` - Import the LRU cache decorator from stdlib                       
+  2. `@lru_cache(maxsize=None)` - Apply memoization decorator; `None` means unlimited cache               
+  3. `def fibonacci(n):` - Define function taking a single integer argument                               
+  4. `if n < 0:` - Validate input is non-negative                                                        
+  5. `if n <= 1:` - Handle base cases (0 and 1)                                                           
+  6. `return fibonacci(n - 1) + fibonacci(n - 2)` - Recursive call with automatic caching                 
+                                                                                                          
+  Without memoization, the time complexity would be O(2^n).                                               
+  With memoization, it's reduced to O(n) since each value is computed only once.                          
+                                                                                                          
+  ┃  # Wrote /tmp/fibonacci.py                                                                            
+                                                                                                          
+  ▣  Build · claude-sonnet-4-20250514 · 12.8s                                                             
+                                                                                                          
+  ┃                                                                                                       
+  ┃                                                                                                       
+  ┃  Build  claude-sonnet-4-20250514 anthropic (https://api.anthropic.com)      /home/user/project        
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tab agents  ctrl+p commands                                                     OpenCode 1.3.3          

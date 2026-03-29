@@ -12,7 +12,9 @@ from cli_agent_orchestrator.providers.copilot_cli import CopilotCliProvider
 from cli_agent_orchestrator.providers.gemini_cli import GeminiCliProvider
 from cli_agent_orchestrator.providers.kimi_cli import KimiCliProvider
 from cli_agent_orchestrator.providers.kiro_cli import KiroCliProvider
+from cli_agent_orchestrator.providers.opencode import OpenCodeProvider
 from cli_agent_orchestrator.providers.q_cli import QCliProvider
+from cli_agent_orchestrator.providers.script import ScriptProvider
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +32,18 @@ class ProviderManager:
         tmux_session: str,
         tmux_window: str,
         agent_profile: Optional[str] = None,
+        env_vars: Optional[Dict[str, str]] = None,
     ) -> BaseProvider:
-        """Create and store provider instance."""
+        """Create and store provider instance.
+
+        Args:
+            provider_type: Provider type string (from ProviderType enum).
+            terminal_id: Unique terminal identifier.
+            tmux_session: Tmux session name.
+            tmux_window: Tmux window name.
+            agent_profile: Optional agent profile name.
+            env_vars: Optional environment variables to set before CLI launch.
+        """
         try:
             provider: BaseProvider
             if provider_type == ProviderType.Q_CLI.value:
@@ -52,11 +64,21 @@ class ProviderManager:
                 provider = GeminiCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.KIMI_CLI.value:
                 provider = KimiCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
+            elif provider_type == ProviderType.OPENCODE.value:
+                provider = OpenCodeProvider(terminal_id, tmux_session, tmux_window, agent_profile)
+            elif provider_type == ProviderType.SCRIPT.value:
+                raise ValueError(
+                    "ScriptProvider requires script_path which cannot be supplied "
+                    "through create_provider(). Use create_script_provider() instead."
+                )
             else:
                 raise ValueError(f"Unknown provider type: {provider_type}")
 
             # Store in direct mapping
             self._providers[terminal_id] = provider
+            # Apply environment variables if provided
+            if env_vars:
+                provider.set_env_vars(env_vars)
             logger.info(f"Created {provider_type} provider for terminal: {terminal_id}")
             return provider
 
@@ -97,6 +119,30 @@ class ProviderManager:
             metadata["agent_profile"],
         )
         logger.info(f"Created provider on-demand for terminal {terminal_id}")
+        return provider
+
+    def create_script_provider(
+        self,
+        terminal_id: str,
+        tmux_session: str,
+        tmux_window: str,
+        script_path: str,
+        script_args: Optional[list] = None,
+        env_vars: Optional[Dict[str, str]] = None,
+    ) -> "ScriptProvider":
+        """Convenience factory for ScriptProvider with script-specific parameters.
+
+        Unlike ``create_provider`` (which takes a generic ``agent_profile`` string),
+        this method directly accepts *script_path* and *script_args*.
+        """
+        provider = ScriptProvider(
+            terminal_id, tmux_session, tmux_window,
+            script_path=script_path,
+            script_args=script_args or [],
+            env_vars=env_vars,
+        )
+        self._providers[terminal_id] = provider
+        logger.info(f"Created script provider for terminal: {terminal_id}")
         return provider
 
     def cleanup_provider(self, terminal_id: str) -> None:

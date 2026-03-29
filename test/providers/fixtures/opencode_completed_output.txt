@@ -1,0 +1,21 @@
+
+  ┃  explain how fibonacci works                                                                          
+  ┃                                                                                                       
+                                                                                                          
+  The Fibonacci sequence is a series of numbers where each number is the sum                              
+  of the two preceding ones. It starts with 0 and 1:                                                      
+                                                                                                          
+  0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...                                                                   
+                                                                                                          
+  The mathematical formula is:                                                                            
+  F(n) = F(n-1) + F(n-2)                                                                                 
+                                                                                                          
+  with base cases F(0) = 0 and F(1) = 1.                                                                 
+                                                                                                          
+  ▣  Build · claude-sonnet-4-20250514 · 5.2s                                                              
+                                                                                                          
+  ┃                                                                                                       
+  ┃                                                                                                       
+  ┃  Build  claude-sonnet-4-20250514 anthropic (https://api.anthropic.com)      /home/user/project        
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tab agents  ctrl+p commands                                                     OpenCode 1.3.3          

@@ -21,8 +21,10 @@ and output format to reliably detect status changes.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+import re
+from typing import Dict, List, Optional
 
+from cli_agent_orchestrator.clients.tmux import tmux_client
 from cli_agent_orchestrator.models.terminal import TerminalStatus
 
 
@@ -38,6 +40,7 @@ class BaseProvider(ABC):
         session_name: Name of the tmux session containing the terminal
         window_name: Name of the tmux window containing the terminal
         _status: Internal status cache (use get_status() for current status)
+        _env_vars: Environment variables to set before launching the CLI tool
     """
 
     def __init__(self, terminal_id: str, session_name: str, window_name: str):
@@ -52,6 +55,7 @@ class BaseProvider(ABC):
         self.session_name = session_name
         self.window_name = window_name
         self._status = TerminalStatus.IDLE
+        self._env_vars: Dict[str, str] = {}
 
     @property
     def status(self) -> TerminalStatus:
@@ -140,6 +144,63 @@ class BaseProvider(ABC):
     def cleanup(self) -> None:
         """Clean up provider resources."""
         pass
+
+    @property
+    def env_vars(self) -> Dict[str, str]:
+        """Environment variables to set before launching the CLI tool."""
+        return self._env_vars
+
+    def set_env_vars(self, env_vars: Dict[str, str]) -> None:
+        """Set environment variables to be applied before CLI launch.
+
+        Args:
+            env_vars: Mapping of variable names to values. These will be
+                exported in the tmux shell before the CLI command is started.
+        """
+        self._env_vars = dict(env_vars)
+
+    # Regex for valid POSIX shell variable names (letters, digits, underscores;
+    # must not start with a digit).
+    _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    def _apply_env_vars(self) -> None:
+        """Send ``export KEY=VALUE`` commands via tmux for each configured env var.
+
+        Should be called in ``initialize()`` *before* launching the CLI command.
+        Uses ``send_keys`` which pastes + Enter; a short sleep between exports
+        gives the shell time to process each line.
+
+        Raises:
+            ValueError: If any key is not a valid shell variable name.
+        """
+        import shlex
+        import time
+
+        for key, value in self._env_vars.items():
+            if not self._ENV_KEY_RE.match(key):
+                raise ValueError(
+                    f"Invalid environment variable name: {key!r}. "
+                    "Only letters, digits and underscores are allowed "
+                    "(must not start with a digit)."
+                )
+            cmd = f"export {key}={shlex.quote(value)}"
+            tmux_client.send_keys(self.session_name, self.window_name, cmd)
+            time.sleep(0.3)
+
+    def graceful_exit(self) -> Optional[str]:
+        """Gracefully exit the CLI and return a session identifier if available.
+
+        Providers that support session persistence (e.g. OpenCode) should
+        override this to:
+        1. Send the appropriate exit signal.
+        2. Wait for the CLI to terminate.
+        3. Capture terminal output and extract a resumable session ID.
+
+        Returns:
+            Session identifier string for resuming later, or ``None`` if the
+            provider does not support session persistence.
+        """
+        return None
 
     def mark_input_received(self) -> None:
         """Notify the provider that external input was sent to the terminal.

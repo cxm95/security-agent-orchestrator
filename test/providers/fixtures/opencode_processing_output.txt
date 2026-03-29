@@ -1,0 +1,22 @@
+
+  ┃  explain how fibonacci works                                                                          
+  ┃                                                                                                       
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+                                                                                                          
+  ┃                                                                                                       
+  ┃                                                                                                       
+  ┃  Build  claude-sonnet-4-20250514 anthropic (https://api.anthropic.com)      /home/user/project        
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ⬝ ⬝ ⬝ ⬝ ⬝ ⬝ ⬝ ■ ⬝ ⬝                                           esc interrupt                         

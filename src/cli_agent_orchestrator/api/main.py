@@ -198,6 +198,12 @@ async def list_providers_endpoint() -> List[Dict]:
         "claude_code": "claude",
         "q_cli": "q",
         "codex": "codex",
+        "copilot_cli": "copilot",
+        "gemini_cli": "gemini",
+        "kimi_cli": "kimi",
+        "opencode": "opencode",
+        # "script" is intentionally omitted: it runs user-provided scripts,
+        # not a fixed binary.
     }
     result = []
     for provider, binary in provider_binaries.items():

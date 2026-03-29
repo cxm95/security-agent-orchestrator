@@ -77,6 +77,12 @@ uv run pytest test/providers/test_claude_code_unit.py -v
 
 # Run specific test class
 uv run pytest test/providers/test_codex_provider_unit.py::TestCodexBuildCommand -v
+
+# Run OpenCode provider tests (60 tests)
+uv run pytest test/providers/test_opencode_provider_unit.py -v
+
+# Run Script provider tests (26 tests)
+uv run pytest test/providers/test_script_provider_unit.py -v
 ```
 
 ### Integration Tests
@@ -242,6 +248,8 @@ Each provider has a dedicated workflow that runs only when its files change:
 | `test-claude-code-provider.yml` | `test_claude_code_unit.py` | `providers/claude_code.py`, `test/providers/**` |
 | `test-kiro-cli-provider.yml` | `test_kiro_cli_unit.py` | `providers/kiro_cli.py`, `test/providers/**` |
 | `test-q-cli-provider.yml` | `test_q_cli_unit.py` | `providers/q_cli.py`, `test/providers/**` |
+| `test-opencode-provider.yml` | `test_opencode_provider_unit.py` | `providers/opencode.py`, `test/providers/**` |
+| `test-script-provider.yml` | `test_script_provider_unit.py` | `providers/script.py`, `test/providers/**` |
 
 Each includes unit tests (Python 3.10/3.11/3.12) and code quality checks (black, isort, mypy).
 
@@ -337,10 +345,10 @@ cli-agent-orchestrator/
 │       ├── clients/                # Database and tmux clients
 │       ├── mcp_server/             # MCP server implementation
 │       ├── models/                 # Data models
-│       ├── providers/              # Agent providers (Q CLI, Claude Code)
+│       ├── providers/              # Agent providers (Q CLI, Claude Code, OpenCode, Script, etc.)
 │       ├── services/               # Business logic services
 │       └── utils/                  # Utility functions
-├── test/                           # Test suite (511 tests, 84% coverage)
+├── test/                           # Test suite (1100+ tests, 92% coverage)
 │   ├── api/                       # API endpoint tests
 │   ├── cli/                       # CLI command tests
 │   ├── clients/                   # Client tests (database, tmux)
