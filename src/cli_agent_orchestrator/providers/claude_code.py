@@ -27,7 +27,7 @@ class ProviderError(Exception):
 
 # Regex patterns for Claude Code output analysis
 ANSI_CODE_PATTERN = r"\x1b\[[0-9;]*m"
-RESPONSE_PATTERN = r"⏺(?:\x1b\[[0-9;]*m)*\s+"  # Handle any ANSI codes between marker and text
+RESPONSE_PATTERN = r"[⏺●](?:\x1b\[[0-9;]*m)*\s+"  # Handle ⏺ (Claude Code) and ● (clother-minimax-cn)
 # Match Claude Code processing spinners:
 # - Old format: "✽ Cooking… (esc to interrupt)" / "✶ Thinking… (esc to interrupt)"
 # - New format: "✽ Cooking… (6s · ↓ 174 tokens · thinking)"
@@ -36,7 +36,7 @@ RESPONSE_PATTERN = r"⏺(?:\x1b\[[0-9;]*m)*\s+"  # Handle any ANSI codes between
 PROCESSING_PATTERN = r"[✶✢✽✻✳].*…"
 IDLE_PROMPT_PATTERN = r"[>❯][\s\xa0]"  # Handle both old ">" and new "❯" prompt styles
 WAITING_USER_ANSWER_PATTERN = (
-    r"❯.*\d+\."  # Pattern for Claude showing selection options with arrow cursor
+    r"❯\s+\d+\."  # Pattern for Claude showing selection options (numbered list after arrow cursor)
 )
 TRUST_PROMPT_PATTERN = r"Yes, I trust this folder"  # Workspace trust dialog
 BYPASS_PROMPT_PATTERN = r"Yes, I accept"  # Bypass permissions confirmation dialog
@@ -61,7 +61,8 @@ class ClaudeCodeProvider(BaseProvider):
         """Build Claude Code command with agent profile if provided.
 
         Returns properly escaped shell command string that can be safely sent via tmux.
-        Uses shlex.join() to handle multiline strings and special characters correctly.
+        System prompt is NOT injected here — it is prepended to the first message
+        by the MCP server to avoid shell-escaping issues with long prompts.
         """
         # --dangerously-skip-permissions: bypass the workspace trust dialog and
         # tool permission prompts. CAO already confirms workspace access during
@@ -73,13 +74,9 @@ class ClaudeCodeProvider(BaseProvider):
             try:
                 profile = load_agent_profile(self._agent_profile)
 
-                # Add system prompt - escape newlines to prevent tmux chunking issues
-                system_prompt = profile.system_prompt if profile.system_prompt is not None else ""
-                if system_prompt:
-                    # Replace actual newlines with \n escape sequences
-                    # This prevents tmux send_keys chunking from breaking the command
-                    escaped_prompt = system_prompt.replace("\\", "\\\\").replace("\n", "\\n")
-                    command_parts.extend(["--append-system-prompt", escaped_prompt])
+                # NOTE: system_prompt is NOT injected via --append-system-prompt.
+                # It is prepended to the first message by the MCP server
+                # (handoff/assign) to avoid shell-escaping issues.
 
                 # Add MCP config if present.
                 # Forward CAO_TERMINAL_ID so MCP servers (e.g. cao-mcp-server)
@@ -94,10 +91,17 @@ class ClaudeCodeProvider(BaseProvider):
                         else:
                             mcp_config[server_name] = server_config.model_dump(exclude_none=True)
 
-                        env = mcp_config[server_name].get("env", {})
-                        if "CAO_TERMINAL_ID" not in env:
-                            env["CAO_TERMINAL_ID"] = self.terminal_id
-                            mcp_config[server_name]["env"] = env
+                        srv_type = mcp_config[server_name].get("type", "stdio")
+
+                        if srv_type == "remote":
+                            # Claude Code uses "sse" (not "remote") for SSE servers
+                            mcp_config[server_name]["type"] = "sse"
+                        else:
+                            # Local stdio — inject CAO_TERMINAL_ID into env
+                            env = mcp_config[server_name].get("env", {})
+                            if "CAO_TERMINAL_ID" not in env:
+                                env["CAO_TERMINAL_ID"] = self.terminal_id
+                                mcp_config[server_name]["env"] = env
 
                     mcp_json = json.dumps({"mcpServers": mcp_config})
                     command_parts.extend(["--mcp-config", mcp_json])
@@ -228,11 +232,11 @@ class ClaudeCodeProvider(BaseProvider):
         self._handle_startup_prompts(timeout=20.0)
 
         # Wait for Claude Code prompt to be ready.
-        # Accept both IDLE and COMPLETED — some CLI versions show a startup
-        # message that get_status() interprets as a completed response.
+        # Wait for IDLE — CLI started and ready for input.
+        # No COMPLETED needed since system_prompt is no longer auto-submitted.
         if not wait_until_status(
             self,
-            {TerminalStatus.IDLE, TerminalStatus.COMPLETED},
+            {TerminalStatus.IDLE},
             timeout=30.0,
             polling_interval=1.0,
         ):
@@ -279,12 +283,12 @@ class ClaudeCodeProvider(BaseProvider):
         return IDLE_PROMPT_PATTERN_LOG
 
     def extract_last_message_from_script(self, script_output: str) -> str:
-        """Extract Claude's final response message using ⏺ indicator."""
+        """Extract Claude's final response message using response marker."""
         # Find all matches of response pattern
         matches = list(re.finditer(RESPONSE_PATTERN, script_output))
 
         if not matches:
-            raise ValueError("No Claude Code response found - no ⏺ pattern detected")
+            raise ValueError("No Claude Code response found - no response marker detected")
 
         # Get the last match (final answer)
         last_match = matches[-1]
@@ -307,7 +311,7 @@ class ClaudeCodeProvider(BaseProvider):
             response_lines.append(clean_line)
 
         if not response_lines or not any(line.strip() for line in response_lines):
-            raise ValueError("Empty Claude Code response - no content found after ⏺")
+            raise ValueError("Empty Claude Code response - no content found after response marker")
 
         # Join lines and clean up
         final_answer = "\n".join(response_lines).strip()

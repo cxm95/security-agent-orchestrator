@@ -215,10 +215,17 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                   <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {/* Show status summary */}
-                  {session.terminals.map(t => (
-                    <StatusBadge key={t.id} status={terminalStatuses[t.id] || null} />
-                  ))}
+                  {/* Show status summary (aggregated counts) */}
+                  {(() => {
+                    const counts: Record<string, number> = {}
+                    session.terminals.forEach(t => {
+                      const s = (terminalStatuses[t.id] || 'unknown').toUpperCase()
+                      counts[s] = (counts[s] || 0) + 1
+                    })
+                    return Object.entries(counts).map(([status, count]) => (
+                      <StatusBadge key={status} status={status.toLowerCase()} count={count} />
+                    ))
+                  })()}
                 </div>
               </button>
 

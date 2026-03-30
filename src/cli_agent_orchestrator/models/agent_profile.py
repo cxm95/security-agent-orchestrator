@@ -6,12 +6,18 @@ from pydantic import BaseModel, Field
 
 
 class McpServer(BaseModel):
-    """MCP server configuration."""
+    """MCP server configuration.
 
-    type: Optional[str] = None
-    command: str
+    Supports two modes:
+    - **local** (default): spawned via ``command`` + ``args``.
+    - **remote**: connected via ``url`` (e.g. SSE / Streamable HTTP).
+    """
+
+    type: Optional[str] = None  # "local" (default) or "remote"
+    command: Optional[str] = None  # Required for local, ignored for remote
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
+    url: Optional[str] = None  # Required for remote
     timeout: Optional[int] = None
 
 

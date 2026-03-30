@@ -7,6 +7,7 @@ from cli_agent_orchestrator.clients.database import get_terminal_metadata
 from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.providers.base import BaseProvider
 from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+from cli_agent_orchestrator.providers.clother_minimax_cn import ClotherMinimaxCnProvider
 from cli_agent_orchestrator.providers.codex import CodexProvider
 from cli_agent_orchestrator.providers.copilot_cli import CopilotCliProvider
 from cli_agent_orchestrator.providers.gemini_cli import GeminiCliProvider
@@ -66,6 +67,8 @@ class ProviderManager:
                 provider = KimiCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.OPENCODE.value:
                 provider = OpenCodeProvider(terminal_id, tmux_session, tmux_window, agent_profile)
+            elif provider_type == ProviderType.CLOTHER_MINIMAX_CN.value:
+                provider = ClotherMinimaxCnProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.SCRIPT.value:
                 raise ValueError(
                     "ScriptProvider requires script_path which cannot be supplied "

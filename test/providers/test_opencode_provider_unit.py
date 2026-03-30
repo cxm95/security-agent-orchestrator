@@ -141,24 +141,20 @@ class TestOpenCodeBuildCommand:
         assert "-m closeai/glm-5" in command
 
     @patch("cli_agent_orchestrator.providers.opencode.load_agent_profile")
-    def test_build_command_system_prompt_ignored_with_warning(self, mock_load_profile):
-        """OpenCode TUI doesn't support --prompt; system_prompt should be ignored."""
+    def test_build_command_system_prompt_not_in_command(self, mock_load_profile):
+        """System prompt should NOT be injected via CLI flags."""
         mock_profile = MagicMock()
         mock_profile.model = None
         mock_profile.system_prompt = "You are a security expert."
         mock_load_profile.return_value = mock_profile
 
         provider = OpenCodeProvider("test1234", "test-session", "window-0", "sec_agent")
-        with patch("cli_agent_orchestrator.providers.opencode.logger") as mock_logger:
-            command = provider._build_opencode_command()
+        command = provider._build_opencode_command()
 
-        # --prompt should NOT be in the command
+        # --prompt should NOT be in the command (system_prompt injected via message)
         assert "--prompt" not in command
         assert "security expert" not in command
-        # Should end with bare 'opencode' (no prompt arg)
         assert command.endswith("opencode")
-        # Should have logged a warning
-        mock_logger.warning.assert_called_once()
 
     @patch("cli_agent_orchestrator.providers.opencode.load_agent_profile")
     def test_build_command_no_model(self, mock_load_profile):

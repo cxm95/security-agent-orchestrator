@@ -255,6 +255,7 @@ async def create_session(
     agent_profile: str,
     session_name: Optional[str] = None,
     working_directory: Optional[str] = None,
+    display_name: Optional[str] = None,
 ) -> Terminal:
     """Create a new session with exactly one terminal."""
     try:
@@ -264,6 +265,7 @@ async def create_session(
             session_name=session_name,
             new_session=True,
             working_directory=working_directory,
+            display_name=display_name,
         )
         return result
 
@@ -324,6 +326,8 @@ async def create_terminal_in_session(
     provider: str,
     agent_profile: str,
     working_directory: Optional[str] = None,
+    display_name: Optional[str] = None,
+    send_system_prompt: bool = True,
 ) -> Terminal:
     """Create additional terminal in existing session."""
     try:
@@ -335,6 +339,8 @@ async def create_terminal_in_session(
             session_name=session_name,
             new_session=False,
             working_directory=working_directory,
+            display_name=display_name,
+            send_system_prompt=send_system_prompt,
         )
         return result
     except ValueError as e:
@@ -421,20 +427,27 @@ async def get_terminal_output(
 
 @app.post("/terminals/{terminal_id}/exit")
 async def exit_terminal(terminal_id: TerminalId) -> Dict:
-    """Send provider-specific exit command to terminal."""
+    """Gracefully exit CLI and return provider session ID if available.
+
+    Tries ``provider.graceful_exit()`` first (extracts session ID for
+    providers like OpenCode).  Falls back to ``provider.exit_cli()`` when
+    ``graceful_exit`` returns *None* (base implementation).
+    """
     try:
         provider = provider_manager.get_provider(terminal_id)
         if provider is None:
             raise ValueError(f"Provider not found for terminal {terminal_id}")
-        exit_command = provider.exit_cli()
-        # Some providers use tmux key sequences (e.g., "C-d" for Ctrl+D) instead
-        # of text commands (e.g., "/exit"). Key sequences must be sent via
-        # send_special_key() to be interpreted by tmux, not as literal text.
-        if exit_command.startswith(("C-", "M-")):
-            terminal_service.send_special_key(terminal_id, exit_command)
-        else:
-            terminal_service.send_input(terminal_id, exit_command)
-        return {"success": True}
+
+        # Prefer graceful_exit (extracts session_id); fall back to exit_cli
+        session_id = provider.graceful_exit()
+        if session_id is None:
+            exit_command = provider.exit_cli()
+            if exit_command.startswith(("C-", "M-")):
+                terminal_service.send_special_key(terminal_id, exit_command)
+            else:
+                terminal_service.send_input(terminal_id, exit_command)
+
+        return {"success": True, "session_id": session_id}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:

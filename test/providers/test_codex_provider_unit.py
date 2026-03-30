@@ -30,13 +30,18 @@ class TestCodexProviderInitialization:
 
         assert result is True
         mock_wait_shell.assert_called_once()
-        # Two send_keys calls: warm-up echo + codex with tmux-compatible flags
-        assert mock_tmux.send_keys.call_count == 2
+        # Three send_keys calls: warm-up echo + proxy unset + codex command
+        assert mock_tmux.send_keys.call_count == 3
         mock_tmux.send_keys.assert_any_call("test-session", "window-0", "echo ready")
         mock_tmux.send_keys.assert_any_call(
             "test-session",
             "window-0",
-            "codex --full-auto --no-alt-screen --disable shell_snapshot",
+            "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy",
+        )
+        mock_tmux.send_keys.assert_any_call(
+            "test-session",
+            "window-0",
+            "codex --full-auto --no-alt-screen --disable shell_snapshot --dangerously-bypass-approvals-and-sandbox",
         )
         mock_wait_status.assert_called_once()
 
@@ -68,7 +73,7 @@ class TestCodexBuildCommand:
     def test_build_command_no_profile(self):
         provider = CodexProvider("test1234", "test-session", "window-0", None)
         command = provider._build_codex_command()
-        assert command == "codex --full-auto --no-alt-screen --disable shell_snapshot"
+        assert command == "codex --full-auto --no-alt-screen --disable shell_snapshot --dangerously-bypass-approvals-and-sandbox"
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
     def test_build_command_with_agent_profile(self, mock_load_profile):
@@ -81,13 +86,13 @@ class TestCodexBuildCommand:
         command = provider._build_codex_command()
 
         mock_load_profile.assert_called_once_with("code_supervisor")
-        assert "codex --full-auto --no-alt-screen --disable shell_snapshot" in command
-        assert "-c" in command
-        assert "developer_instructions=" in command
-        assert "You are a code supervisor agent." in command
+        assert "codex --full-auto --no-alt-screen --disable shell_snapshot --dangerously-bypass-approvals-and-sandbox" in command
+        # System prompt should NOT be in the command (injected via message now)
+        assert "developer_instructions" not in command
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
-    def test_build_command_escapes_quotes(self, mock_load_profile):
+    def test_build_command_escapes_quotes_no_longer_needed(self, mock_load_profile):
+        """System prompt no longer in command — quotes don't need escaping."""
         mock_profile = MagicMock()
         mock_profile.system_prompt = 'Use "double quotes" carefully.'
         mock_profile.mcpServers = None
@@ -96,10 +101,12 @@ class TestCodexBuildCommand:
         provider = CodexProvider("test1234", "test-session", "window-0", "test_agent")
         command = provider._build_codex_command()
 
-        assert '\\"double quotes\\"' in command
+        assert "developer_instructions" not in command
+        assert "double quotes" not in command
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
-    def test_build_command_escapes_newlines(self, mock_load_profile):
+    def test_build_command_system_prompt_not_in_command(self, mock_load_profile):
+        """System prompt should NOT appear in codex command (injected via first message)."""
         mock_profile = MagicMock()
         mock_profile.system_prompt = "Line one.\nLine two.\n\n## Section\n- Item"
         mock_profile.mcpServers = None
@@ -108,10 +115,8 @@ class TestCodexBuildCommand:
         provider = CodexProvider("test1234", "test-session", "window-0", "test_agent")
         command = provider._build_codex_command()
 
-        # Literal newlines must be escaped to \n for TOML and tmux compatibility
-        assert "\n" not in command
-        assert "\\n" in command
-        assert "Line one.\\nLine two.\\n\\n## Section\\n- Item" in command
+        assert "developer_instructions" not in command
+        assert "Line one" not in command
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
     def test_build_command_with_mcp_servers(self, mock_load_profile):
@@ -137,7 +142,7 @@ class TestCodexBuildCommand:
         assert "mcp_servers.cao-mcp-server.env_vars=" in command
         assert "CAO_TERMINAL_ID" in command
         # Tool timeout must be a TOML float (600.0) for Codex's f64 deserializer
-        assert "mcp_servers.cao-mcp-server.tool_timeout_sec=600.0" in command
+        assert "mcp_servers.cao-mcp-server.tool_timeout_sec=120.0" in command
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
     def test_build_command_with_mcp_servers_env(self, mock_load_profile):
@@ -193,7 +198,7 @@ class TestCodexBuildCommand:
         provider = CodexProvider("test1234", "test-session", "window-0", "empty_agent")
         command = provider._build_codex_command()
 
-        assert command == "codex --full-auto --no-alt-screen --disable shell_snapshot"
+        assert command == "codex --full-auto --no-alt-screen --disable shell_snapshot --dangerously-bypass-approvals-and-sandbox"
         assert "developer_instructions" not in command
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
@@ -206,7 +211,7 @@ class TestCodexBuildCommand:
         provider = CodexProvider("test1234", "test-session", "window-0", "none_agent")
         command = provider._build_codex_command()
 
-        assert command == "codex --full-auto --no-alt-screen --disable shell_snapshot"
+        assert command == "codex --full-auto --no-alt-screen --disable shell_snapshot --dangerously-bypass-approvals-and-sandbox"
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
     def test_build_command_profile_load_failure(self, mock_load_profile):
@@ -236,10 +241,11 @@ class TestCodexBuildCommand:
         result = provider.initialize()
 
         assert result is True
-        # The second send_keys call should contain developer_instructions
-        codex_call = mock_tmux.send_keys.call_args_list[1]
-        assert "developer_instructions=" in codex_call.args[2]
-        assert "You are a supervisor." in codex_call.args[2]
+        # The third send_keys call should be the codex command (no developer_instructions)
+        # (1st=echo ready, 2nd=unset proxy, 3rd=codex command)
+        codex_call = mock_tmux.send_keys.call_args_list[2]
+        assert "developer_instructions" not in codex_call.args[2]
+        assert "codex --full-auto" in codex_call.args[2]
 
 
 class TestCodexProviderStatusDetection:

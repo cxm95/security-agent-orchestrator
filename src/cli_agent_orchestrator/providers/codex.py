@@ -128,25 +128,18 @@ class CodexProvider(BaseProvider):
         """Build Codex command with agent profile if provided.
 
         Returns properly escaped shell command string that can be safely sent via tmux.
-        Uses codex's -c developer_instructions flag to inject agent system prompts.
+        System prompt is NOT injected here — it is prepended to the first message
+        by the MCP server to avoid shell-escaping issues with long prompts.
         """
-        command_parts = ["codex", "--full-auto", "--no-alt-screen", "--disable", "shell_snapshot"]
+        command_parts = ["codex", "--full-auto", "--no-alt-screen", "--disable", "shell_snapshot", "--dangerously-bypass-approvals-and-sandbox"]
 
         if self._agent_profile is not None:
             try:
                 profile = load_agent_profile(self._agent_profile)
 
-                system_prompt = profile.system_prompt if profile.system_prompt is not None else ""
-                if system_prompt:
-                    # Codex accepts developer_instructions via -c config override.
-                    # This is injected as a developer role message before AGENTS.md content.
-                    # Escape backslashes, double quotes, and newlines for TOML basic string.
-                    # Newlines must become literal \n to prevent tmux send_keys from
-                    # splitting the command across multiple lines.
-                    escaped_prompt = (
-                        system_prompt.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-                    )
-                    command_parts.extend(["-c", f'developer_instructions="{escaped_prompt}"'])
+                # NOTE: system_prompt is NOT injected via -c developer_instructions.
+                # It is prepended to the first message by the MCP server
+                # (handoff/assign) to avoid shell-escaping issues.
 
                 # Add MCP servers via -c config overrides (per-session, no global config changes).
                 # Each server field is set via dotted path: mcp_servers.<name>.<field>=<value>
@@ -182,7 +175,7 @@ class CodexProvider(BaseProvider):
                         # deserializes tool_timeout_sec via Option<f64>; a TOML integer
                         # is silently rejected and falls back to the 60s default.
                         if "tool_timeout_sec" not in cfg:
-                            command_parts.extend(["-c", f"{prefix}.tool_timeout_sec=600.0"])
+                            command_parts.extend(["-c", f"{prefix}.tool_timeout_sec=120.0"])
 
             except Exception as e:
                 raise ProviderError(f"Failed to load agent profile '{self._agent_profile}': {e}")
@@ -234,6 +227,14 @@ class CodexProvider(BaseProvider):
         # has not yet processed a full interactive command cycle.
         tmux_client.send_keys(self.session_name, self.window_name, "echo ready")
         time.sleep(2.0)
+
+        # Ensure localhost API calls (MCP tools → CAO server) bypass HTTP proxy
+        tmux_client.send_keys(
+            self.session_name,
+            self.window_name,
+            "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy",
+        )
+        time.sleep(0.5)
 
         # Build command with flags and agent profile (developer_instructions).
         # --no-alt-screen: run in inline mode so output stays in normal scrollback,

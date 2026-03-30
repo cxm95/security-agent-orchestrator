@@ -49,14 +49,20 @@ const UNKNOWN_CONFIG: StatusStyle = {
   textClass: 'text-gray-500',
 }
 
-export function StatusBadge({ status }: { status: TerminalStatus }) {
+interface StatusBadgeProps {
+  status: TerminalStatus
+  count?: number
+}
+
+export function StatusBadge({ status, count }: StatusBadgeProps) {
   const normalized = status ? status.toUpperCase() : null
   const config = (normalized && STATUS_CONFIG[normalized]) || UNKNOWN_CONFIG
+  const label = count !== undefined ? `${config.label} (${count})` : config.label
 
   return (
     <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full ${config.bgClass}`}>
       <span className={`w-2 h-2 rounded-full ${config.dotClass} ${config.pulse ? 'animate-pulse' : ''}`} />
-      <span className={`text-xs font-medium ${config.textClass}`}>{config.label}</span>
+      <span className={`text-xs font-medium ${config.textClass}`}>{label}</span>
     </span>
   )
 }

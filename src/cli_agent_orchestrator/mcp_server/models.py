@@ -12,3 +12,6 @@ class HandoffResult(BaseModel):
     message: str = Field(description="A message describing the result of the handoff")
     output: Optional[str] = Field(None, description="The output from the target agent")
     terminal_id: Optional[str] = Field(None, description="The terminal ID used for the handoff")
+    provider_session_id: Optional[str] = Field(
+        None, description="Provider-specific session ID for resuming (e.g. OpenCode ses_xxx)"
+    )

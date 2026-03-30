@@ -22,11 +22,10 @@ Permission / yolo mode:
   JSON.
 
 System prompt:
-  OpenCode TUI does **not** accept a system prompt via CLI flags.
-  If the agent profile includes a ``system_prompt``, the provider will
-  log a warning and skip it.  Users should send the system prompt as
-  the first message after initialization, or configure an OpenCode
-  agent via ``opencode agent``.
+  System prompts are NOT injected via CLI flags.  Instead, the MCP
+  server prepends the agent profile's ``system_prompt`` to the first
+  message sent via tmux (handoff/assign).  This avoids shell-escaping
+  issues with long, multi-line prompts.
 
 Model selection:
   ``opencode -m provider/model``  (e.g. ``closeai/glm-5``)
@@ -149,10 +148,11 @@ class OpenCodeProvider(BaseProvider):
             OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=43200000 \
             opencode [-m provider/model]
 
-        Note: OpenCode TUI does **not** support ``--prompt`` or any CLI
-        flag for injecting a system prompt.  The agent profile's
-        ``system_prompt`` is intentionally ignored (with a warning log).
-        Send it as the first user message after initialization instead.
+        OpenCode's ``--prompt`` flag auto-submits its value as the first
+        user message (not a true system prompt).  When the agent profile
+        contains a ``system_prompt``, the provider injects it via
+        ``--prompt`` so the model receives the instructions before any
+        task message arrives from handoff/assign.
 
         Returns a fully escaped shell command string for tmux.
         """
@@ -168,13 +168,52 @@ class OpenCodeProvider(BaseProvider):
                 if profile.model:
                     command_parts.extend(["-m", profile.model])
 
-                if profile.system_prompt:
-                    logger.warning(
-                        "OpenCode TUI does not support system prompts via CLI flags. "
-                        "The agent profile system_prompt for '%s' will be ignored. "
-                        "Send it as the first message after initialization.",
-                        self._agent_profile,
-                    )
+                # NOTE: system_prompt is NOT injected here via --prompt.
+                # It is prepended to the first message by the MCP server
+                # (handoff/assign) to avoid shell-escaping issues.
+
+                # Translate agent profile mcpServers into OpenCode's mcp config.
+                # Agent profile format:  {name: {command, args, env, type}}
+                # OpenCode format:       {name: {type:"local", command:[cmd, ...args], environment:{...}}}
+                if profile.mcpServers:
+                    mcp_section: dict = {}
+                    for srv_name, srv_cfg in profile.mcpServers.items():
+                        if isinstance(srv_cfg, dict):
+                            cfg = srv_cfg
+                        else:
+                            cfg = srv_cfg.model_dump(exclude_none=True)
+
+                        srv_type = cfg.get("type", "local")
+
+                        if srv_type == "remote":
+                            # Remote/SSE server — only needs url
+                            oc_entry: dict = {
+                                "type": "remote",
+                                "enabled": True,
+                                "url": cfg["url"],
+                                "oauth": False,
+                            }
+                            if "timeout" in cfg:
+                                oc_entry["timeout"] = cfg["timeout"]
+                        else:
+                            # Local stdio server
+                            oc_entry = {"type": "local", "enabled": True}
+                            cmd_list = [cfg["command"]] if "command" in cfg else []
+                            if "args" in cfg and cfg["args"]:
+                                cmd_list.extend(cfg["args"])
+                            oc_entry["command"] = cmd_list
+                            # Translate env → environment
+                            env = dict(cfg.get("env", {}) or {})
+                            # Always forward CAO_TERMINAL_ID so MCP servers can
+                            # identify the calling terminal.
+                            env["CAO_TERMINAL_ID"] = "{env:CAO_TERMINAL_ID}"
+                            if env:
+                                oc_entry["environment"] = env
+                            if "timeout" in cfg:
+                                oc_entry["timeout"] = cfg["timeout"]
+
+                        mcp_section[srv_name] = oc_entry
+                    runtime_config["mcp"] = mcp_section
 
             except Exception as e:
                 raise ProviderError(f"Failed to load agent profile '{self._agent_profile}': {e}")
@@ -195,9 +234,12 @@ class OpenCodeProvider(BaseProvider):
 
         opencode_cmd = shlex.join(command_parts)
 
+        # Ensure localhost API calls bypass any HTTP proxy
+        proxy_unset = "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy;"
+
         if env_prefix_parts:
-            return " ".join(env_prefix_parts) + " " + opencode_cmd
-        return opencode_cmd
+            return proxy_unset + " " + " ".join(env_prefix_parts) + " " + opencode_cmd
+        return proxy_unset + " " + opencode_cmd
 
     def initialize(self) -> bool:
         """Initialize OpenCode provider by starting opencode TUI."""
@@ -212,10 +254,10 @@ class OpenCodeProvider(BaseProvider):
         command = self._build_opencode_command()
         tmux_client.send_keys(self.session_name, self.window_name, command)
 
-        # Wait for OpenCode TUI to be ready (welcome screen or idle input)
+        # Wait for OpenCode TUI to be ready (IDLE = input prompt visible)
         if not wait_until_status(
             self,
-            {TerminalStatus.IDLE, TerminalStatus.COMPLETED},
+            {TerminalStatus.IDLE},
             timeout=60.0,
             polling_interval=1.0,
         ):

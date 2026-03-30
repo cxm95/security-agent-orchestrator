@@ -185,13 +185,15 @@ class TestTerminalCreationWithWorkingDirectory:
 class TestExitTerminalEndpoint:
     """Test POST /terminals/{terminal_id}/exit endpoint.
 
-    Verifies that text commands (e.g., /exit) are sent via send_input()
-    and tmux special key sequences (e.g., C-d) are sent via send_special_key().
+    The exit endpoint now tries ``graceful_exit()`` first (returns
+    session_id for providers like OpenCode), then falls back to
+    ``exit_cli()`` when graceful_exit returns None.
     """
 
     def test_exit_terminal_text_command(self, client):
-        """Text exit commands (e.g., /exit) should use send_input."""
+        """When graceful_exit returns None, fall back to exit_cli text command."""
         mock_provider = MagicMock()
+        mock_provider.graceful_exit.return_value = None
         mock_provider.exit_cli.return_value = "/exit"
 
         with (
@@ -203,13 +205,15 @@ class TestExitTerminalEndpoint:
             response = client.post("/terminals/abcd1234/exit")
 
             assert response.status_code == 200
-            assert response.json() == {"success": True}
+            assert response.json() == {"success": True, "session_id": None}
+            mock_provider.graceful_exit.assert_called_once()
             mock_svc.send_input.assert_called_once_with("abcd1234", "/exit")
             mock_svc.send_special_key.assert_not_called()
 
     def test_exit_terminal_special_key(self, client):
-        """Tmux key sequences (e.g., C-d) should use send_special_key."""
+        """When graceful_exit returns None, fall back to exit_cli special key."""
         mock_provider = MagicMock()
+        mock_provider.graceful_exit.return_value = None
         mock_provider.exit_cli.return_value = "C-d"
 
         with (
@@ -221,13 +225,14 @@ class TestExitTerminalEndpoint:
             response = client.post("/terminals/abcd1234/exit")
 
             assert response.status_code == 200
-            assert response.json() == {"success": True}
+            assert response.json() == {"success": True, "session_id": None}
             mock_svc.send_special_key.assert_called_once_with("abcd1234", "C-d")
             mock_svc.send_input.assert_not_called()
 
     def test_exit_terminal_meta_key(self, client):
-        """Meta key sequences (M-x) should also use send_special_key."""
+        """Meta key sequences (M-x) should also use send_special_key fallback."""
         mock_provider = MagicMock()
+        mock_provider.graceful_exit.return_value = None
         mock_provider.exit_cli.return_value = "M-x"
 
         with (
@@ -242,6 +247,25 @@ class TestExitTerminalEndpoint:
             mock_svc.send_special_key.assert_called_once_with("abcd1234", "M-x")
             mock_svc.send_input.assert_not_called()
 
+    def test_exit_terminal_graceful_exit_returns_session_id(self, client):
+        """When graceful_exit succeeds, return session_id and skip exit_cli."""
+        mock_provider = MagicMock()
+        mock_provider.graceful_exit.return_value = "ses_abc123"
+
+        with (
+            patch("cli_agent_orchestrator.api.main.provider_manager") as mock_pm,
+            patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc,
+        ):
+            mock_pm.get_provider.return_value = mock_provider
+
+            response = client.post("/terminals/abcd1234/exit")
+
+            assert response.status_code == 200
+            assert response.json() == {"success": True, "session_id": "ses_abc123"}
+            mock_provider.exit_cli.assert_not_called()
+            mock_svc.send_input.assert_not_called()
+            mock_svc.send_special_key.assert_not_called()
+
     def test_exit_terminal_provider_not_found(self, client):
         """Should return 404 when provider is not found."""
         with patch("cli_agent_orchestrator.api.main.provider_manager") as mock_pm:
@@ -254,6 +278,7 @@ class TestExitTerminalEndpoint:
     def test_exit_terminal_server_error(self, client):
         """Should return 500 on unexpected errors."""
         mock_provider = MagicMock()
+        mock_provider.graceful_exit.return_value = None
         mock_provider.exit_cli.return_value = "/exit"
 
         with (

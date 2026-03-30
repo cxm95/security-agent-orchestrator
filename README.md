@@ -300,6 +300,7 @@ When an agent calls an MCP tool, the server identifies the caller by their `CAO_
 CAO supports three orchestration patterns:
 
 > **Note:** All orchestration modes support optional `working_directory` parameter when enabled via `CAO_ENABLE_WORKING_DIRECTORY=true`. See [Working Directory Support](#working-directory-support) for details.
+> All modes also support **context folder parameters** (`global_folder`, `output_folder`, `input_folder`, `input_folders`, `metadata_folder`) and **display_name** for structured multi-phase workflows. See [Context Folders](#context-folders) for details.
 
 **1. Handoff** - Transfer control to another agent and wait for completion
 
@@ -474,6 +475,116 @@ All paths are canonicalized via `realpath` and validated against a security poli
 
 For configuration and usage details, see [docs/working-directory.md](docs/working-directory.md).
 
+## Context Folders
+
+`handoff` and `assign` tools accept optional **context folder parameters** that allow supervisors and runners to pass structured directory context to worker agents:
+
+| Parameter | Description |
+|-----------|-------------|
+| `global_folder` | Shared directory accessible by all agents in the session |
+| `output_folder` | Directory where the worker should write results |
+| `input_folder` | Primary input directory for the worker to read from |
+| `input_folders` | Named input directories as `{name: path}` dict (e.g., `{"phase1": "/path/to/phase1/out"}`) |
+| `metadata_folder` | Directory for task-level metadata files |
+| `display_name` | Human-readable label for the tmux terminal window |
+
+When any context folder parameters are provided, CAO serializes them as a `[CAO Context]` JSON header prepended to the message body:
+
+```
+[CAO Context]
+{
+  "global_folder": "/tmp/sessions/run-001/global",
+  "output_folder": "/tmp/sessions/run-001/0/phase1/out",
+  "metadata_folder": "/tmp/sessions/run-001/0/meta"
+}
+[/CAO Context]
+
+Your actual task message here...
+```
+
+### cao-mcp-task-context
+
+For multi-phase workflow scenarios, the companion **`cao-mcp-task-context`** MCP server manages the session directory structure:
+
+```
+sessions/
+└── my-session/
+    ├── global/           # Shared across all tasks
+    ├── TASK.md           # Top-level task prompt
+    ├── RUNNER.md         # Runner prompt template
+    ├── workflow.json     # Phase definitions + dependencies
+    └── 0/               # Task index 0
+        ├── meta/        # Task metadata JSONs
+        └── phase1/      # Phase working directory
+            ├── AGENT.md # Worker system prompt
+            ├── TASK.md  # Worker task prompt
+            └── out/     # Phase output directory
+```
+
+Tools provided by `cao-mcp-task-context`:
+
+| Tool | Description |
+|------|-------------|
+| `init_session` | Create session root with workflow.json, global/, templates |
+| `get_workflow` | Read the current session's workflow definition |
+| `prepare_task` | Create `{task_index}/meta/` directory tree |
+| `prepare_phase_context` | Create phase working dir + out/, return context paths for handoff |
+| `write_task_meta` | Write JSON metadata under `{task_index}/meta/` |
+| `list_tasks` | List all task directories in the session |
+| `cleanup_task` | Remove a task directory |
+| `cleanup_phase` | Remove a specific phase directory |
+| `archive_provider_session` | Zip provider session data for archival |
+
+Install and configure via agent profile frontmatter:
+
+```yaml
+mcpServers:
+  cao-task-context:
+    type: stdio
+    command: cao-task-context
+    env:
+      CAO_SESSION_ROOT: "/tmp/my-sessions"
+```
+
+## Remote MCP Servers (SSE)
+
+Agent profiles support both **local** (stdio) and **remote** (SSE/HTTP) MCP server configurations. Remote servers are useful when multiple agents need to share a single server instance (e.g., for atomic task distribution).
+
+```yaml
+mcpServers:
+  # Local stdio server (default)
+  cao-mcp-server:
+    command: cao-mcp-server
+    env:
+      CAO_ENABLE_WORKING_DIRECTORY: "true"
+  # Remote SSE server (shared across agents)
+  taskgen:
+    type: remote
+    url: "http://127.0.0.1:9877/sse"
+```
+
+Provider translation:
+
+| Provider | Local (`type: stdio`) | Remote (`type: remote`) |
+|----------|----------------------|------------------------|
+| **Claude Code / Clother** | `--mcp-config` JSON passthrough | Translated to `type: "sse"` with `url` |
+| **OpenCode** | `type: "local"` with `command` array | `type: "remote"` with `url`, `oauth: false` |
+| **Codex** | `-c mcp_servers.NAME.*` CLI flags | ❌ Not supported |
+
+## System Prompt Injection
+
+CAO injects agent profile `system_prompt` content by **prepending it as the first user message** via tmux, wrapped in `[System Prompt]...[/System Prompt]` tags. This approach avoids shell-escaping issues with long prompts containing special characters.
+
+- **`cao launch`**: System prompt is sent as the first message after the provider initializes
+- **`handoff` / `assign`**: System prompt is prepended to the task message (the provider starts with `send_system_prompt=false` to prevent double injection)
+
+The `[CAO Handoff]` and `[CAO Assign]` banners are always appended to provide orchestration context:
+
+```
+[CAO Handoff] Supervisor terminal ID: abc123. This is a blocking handoff...
+[CAO Assign] supervisor_terminal_id=abc123. When all work is complete, call: send_message(...)
+```
+
 ## Cross-Provider Orchestration
 
 By default, worker agents inherit the provider of the terminal that spawned them. To run specific agents on different providers, add a `provider` key to the agent profile frontmatter:
@@ -486,7 +597,7 @@ provider: claude_code
 ---
 ```
 
-Valid values: `kiro_cli`, `claude_code`, `codex`, `opencode`, `q_cli`, `gemini_cli`, `kimi_cli`, `copilot_cli`, `script`.
+Valid values: `kiro_cli`, `claude_code`, `codex`, `opencode`, `clother_minimax_cn`, `q_cli`, `gemini_cli`, `kimi_cli`, `copilot_cli`, `script`.
 
 When a supervisor calls `assign` or `handoff`, CAO reads the worker's agent profile and uses the declared provider if present. If the key is missing or invalid, the worker falls back to the supervisor's provider.
 
@@ -507,7 +618,8 @@ Each provider enables auto-approve mode by default to skip interactive permissio
 | Provider | Mechanism |
 |----------|-----------|
 | **Claude Code** | `--dangerously-skip-permissions` flag |
-| **Codex CLI** | `--full-auto` flag |
+| **Clother MiniMax CN** | Same as Claude Code (uses `clother-minimax-cn` binary) |
+| **Codex CLI** | `--full-auto --dangerously-bypass-approvals-and-sandbox` flags |
 | **OpenCode** | `OPENCODE_CONFIG_CONTENT='{"permission":"allow"}'` env var |
 | **Others** | Provider defaults |
 

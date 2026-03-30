@@ -379,7 +379,7 @@ class TestClaudeCodeProviderMisc:
 
     @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
     def test_build_claude_command_with_system_prompt(self, mock_load):
-        """Test building Claude command with system prompt."""
+        """System prompt should NOT be in the command (injected via message)."""
         mock_profile = MagicMock()
         mock_profile.system_prompt = "Test prompt\nwith newlines"
         mock_profile.mcpServers = None
@@ -389,7 +389,8 @@ class TestClaudeCodeProviderMisc:
         command = provider._build_claude_command()
 
         assert "claude" in command
-        assert "--append-system-prompt" in command
+        assert "--append-system-prompt" not in command
+        assert "Test prompt" not in command
 
     @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
     def test_build_command_mcp_injects_terminal_id(self, mock_load):

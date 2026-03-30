@@ -12,4 +12,5 @@ class ProviderType(str, Enum):
     GEMINI_CLI = "gemini_cli"
     COPILOT_CLI = "copilot_cli"
     OPENCODE = "opencode"
+    CLOTHER_MINIMAX_CN = "clother_minimax_cn"
     SCRIPT = "script"

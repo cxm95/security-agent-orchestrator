@@ -34,6 +34,7 @@ from cli_agent_orchestrator.constants import SESSION_PREFIX, TERMINAL_LOG_DIR
 from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.models.terminal import Terminal, TerminalStatus
 from cli_agent_orchestrator.providers.manager import provider_manager
+from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile
 from cli_agent_orchestrator.utils.terminal import (
     generate_session_name,
     generate_terminal_id,
@@ -60,6 +61,8 @@ def create_terminal(
     session_name: Optional[str] = None,
     new_session: bool = False,
     working_directory: Optional[str] = None,
+    display_name: Optional[str] = None,
+    send_system_prompt: bool = True,
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
@@ -68,7 +71,8 @@ def create_terminal(
     2. Create tmux session/window (new or existing)
     3. Save terminal metadata to database
     4. Initialize the CLI provider (starts the agent)
-    5. Set up terminal logging via tmux pipe-pane
+    5. Optionally send system prompt as first message
+    6. Set up terminal logging via tmux pipe-pane
 
     Args:
         provider: Provider type string (e.g., "kiro_cli", "claude_code")
@@ -76,6 +80,10 @@ def create_terminal(
         session_name: Optional custom session name. If not provided, auto-generated.
         new_session: If True, creates a new tmux session. If False, adds to existing.
         working_directory: Optional working directory for the terminal shell
+        display_name: Optional display name for the tmux window
+        send_system_prompt: If True, send agent profile's system_prompt as the first
+            message after provider init.  Set to False when the caller will inject
+            the prompt itself (e.g., MCP handoff/assign already prepend it).
 
     Returns:
         Terminal object with all metadata populated
@@ -91,7 +99,7 @@ def create_terminal(
         if not session_name:
             session_name = generate_session_name()
 
-        window_name = generate_window_name(agent_profile)
+        window_name = generate_window_name(agent_profile, display_name=display_name)
 
         # Step 2: Create tmux session or window
         if new_session:
@@ -122,6 +130,28 @@ def create_terminal(
             provider, terminal_id, session_name, window_name, agent_profile
         )
         provider_instance.initialize()
+
+        # Step 4.5: Send system prompt as the first message (when enabled)
+        # System prompts are no longer passed via CLI flags; instead they are
+        # prepended to the first user message.  For child agents created via
+        # handoff/assign the MCP server handles this, but for the initial
+        # (supervisor) terminal launched by ``cao launch`` we must do it here.
+        if send_system_prompt:
+            try:
+                profile = load_agent_profile(agent_profile)
+                if profile and profile.system_prompt:
+                    sys_header = (
+                        f"[System Prompt]\n{profile.system_prompt}\n[/System Prompt]"
+                    )
+                    tmux_client.send_keys(
+                        session_name, window_name, sys_header,
+                        enter_count=provider_instance.paste_enter_count,
+                    )
+                    logger.info(f"Sent system prompt to terminal {terminal_id}")
+            except Exception as prompt_err:
+                logger.warning(
+                    f"Failed to send system prompt for '{agent_profile}': {prompt_err}"
+                )
 
         # Step 5: Set up terminal logging via tmux pipe-pane
         # This captures all terminal output to a log file for inbox monitoring

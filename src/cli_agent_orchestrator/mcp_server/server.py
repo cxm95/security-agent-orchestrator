@@ -1,6 +1,7 @@
 """CLI Agent Orchestrator MCP Server implementation."""
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -12,6 +13,12 @@ from pydantic import Field
 
 from cli_agent_orchestrator.constants import API_BASE_URL, DEFAULT_PROVIDER
 from cli_agent_orchestrator.mcp_server.models import HandoffResult
+from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile
+
+# Create a requests session that ignores proxy env vars so that
+# localhost API calls (to the CAO server) never go through an external proxy.
+_http = requests.Session()
+_http.trust_env = False
 from cli_agent_orchestrator.models.terminal import TerminalStatus
 from cli_agent_orchestrator.utils.terminal import generate_session_name, wait_until_terminal_status
 
@@ -22,6 +29,48 @@ ENABLE_WORKING_DIRECTORY = os.getenv("CAO_ENABLE_WORKING_DIRECTORY", "false").lo
 
 # Environment variable to enable/disable automatic sender terminal ID injection
 ENABLE_SENDER_ID_INJECTION = os.getenv("CAO_ENABLE_SENDER_ID_INJECTION", "false").lower() == "true"
+
+
+def _build_context_header(
+    global_folder: Optional[str] = None,
+    output_folder: Optional[str] = None,
+    input_folder: Optional[str] = None,
+    input_folders: Optional[Dict[str, str]] = None,
+    metadata_folder: Optional[str] = None,
+) -> str:
+    """Build a [CAO Context] header from optional folder params.
+
+    Returns empty string when all params are None/empty.
+    """
+    ctx: Dict[str, Any] = {}
+    if global_folder:
+        ctx["global_folder"] = global_folder
+    if output_folder:
+        ctx["output_folder"] = output_folder
+    if input_folder:
+        ctx["input_folder"] = input_folder
+    if input_folders:
+        ctx["input_folders"] = input_folders
+    if metadata_folder:
+        ctx["metadata_folder"] = metadata_folder
+    if not ctx:
+        return ""
+    return f"[CAO Context]\n{json.dumps(ctx, indent=2)}\n[/CAO Context]\n\n"
+
+
+def _load_system_prompt(agent_profile: str) -> str:
+    """Load the system_prompt from an agent profile and wrap it in a header.
+
+    Returns empty string if the profile has no system_prompt.
+    """
+    try:
+        profile = load_agent_profile(agent_profile)
+        if profile.system_prompt:
+            return f"[System Prompt]\n{profile.system_prompt}\n[/System Prompt]\n\n"
+    except Exception as e:
+        logger.warning(f"Failed to load system prompt for '{agent_profile}': {e}")
+    return ""
+
 
 # Create MCP server
 mcp = FastMCP(
@@ -41,13 +90,16 @@ mcp = FastMCP(
 
 
 def _create_terminal(
-    agent_profile: str, working_directory: Optional[str] = None
+    agent_profile: str,
+    working_directory: Optional[str] = None,
+    display_name: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Create a new terminal with the specified agent profile.
 
     Args:
         agent_profile: Agent profile for the terminal
         working_directory: Optional working directory for the terminal
+        display_name: Optional display name for the tmux window
 
     Returns:
         Tuple of (terminal_id, provider)
@@ -61,7 +113,7 @@ def _create_terminal(
     current_terminal_id = os.environ.get("CAO_TERMINAL_ID")
     if current_terminal_id:
         # Get terminal metadata via API
-        response = requests.get(f"{API_BASE_URL}/terminals/{current_terminal_id}")
+        response = _http.get(f"{API_BASE_URL}/terminals/{current_terminal_id}")
         response.raise_for_status()
         terminal_metadata = response.json()
 
@@ -71,7 +123,7 @@ def _create_terminal(
         # If no working_directory specified, get conductor's current directory
         if working_directory is None:
             try:
-                response = requests.get(
+                response = _http.get(
                     f"{API_BASE_URL}/terminals/{current_terminal_id}/working-directory"
                 )
                 if response.status_code == 200:
@@ -88,25 +140,36 @@ def _create_terminal(
                 )
 
         # Create new terminal in existing session - always pass working_directory
-        params = {"provider": provider, "agent_profile": agent_profile}
+        # send_system_prompt=false: handoff/assign prepend the prompt themselves
+        params = {
+            "provider": provider,
+            "agent_profile": agent_profile,
+            "send_system_prompt": "false",
+        }
         if working_directory:
             params["working_directory"] = working_directory
+        if display_name:
+            params["display_name"] = display_name
 
-        response = requests.post(f"{API_BASE_URL}/sessions/{session_name}/terminals", params=params)
+        response = _http.post(f"{API_BASE_URL}/sessions/{session_name}/terminals", params=params)
         response.raise_for_status()
         terminal = response.json()
     else:
         # Create new session with terminal
+        # send_system_prompt=false: handoff/assign prepend the prompt themselves
         session_name = generate_session_name()
         params = {
             "provider": provider,
             "agent_profile": agent_profile,
             "session_name": session_name,
+            "send_system_prompt": "false",
         }
         if working_directory:
             params["working_directory"] = working_directory
+        if display_name:
+            params["display_name"] = display_name
 
-        response = requests.post(f"{API_BASE_URL}/sessions", params=params)
+        response = _http.post(f"{API_BASE_URL}/sessions", params=params)
         response.raise_for_status()
         terminal = response.json()
 
@@ -123,29 +186,27 @@ def _send_direct_input(terminal_id: str, message: str) -> None:
     Raises:
         Exception: If sending fails
     """
-    response = requests.post(
+    response = _http.post(
         f"{API_BASE_URL}/terminals/{terminal_id}/input", params={"message": message}
     )
     response.raise_for_status()
 
 
 def _send_direct_input_handoff(terminal_id: str, provider: str, message: str) -> None:
-    """Send handoff payload to an agent, prepending orchestrator instructions if needed."""
-    # For Codex provider: prepend handoff context so the worker agent knows
-    # this is a blocking handoff and should simply output results rather than
-    # attempting to call send_message back to the supervisor.
-    if provider == "codex":
-        supervisor_id = os.environ.get("CAO_TERMINAL_ID", "unknown")
-        handoff_message = (
-            f"[CAO Handoff] Supervisor terminal ID: {supervisor_id}. "
-            "This is a blocking handoff — the orchestrator will automatically "
-            "capture your response when you finish. Complete the task and output "
-            "your results directly. Do NOT use send_message to notify the supervisor "
-            "unless explicitly needed — just do the work and present your deliverables.\n\n"
-            f"{message}"
-        )
-    else:
-        handoff_message = message
+    """Send handoff payload to an agent, always prepending [CAO Handoff] header.
+
+    All providers receive the header so the agent knows this is a blocking task
+    and should output results directly without using send_message.
+    """
+    supervisor_id = os.environ.get("CAO_TERMINAL_ID", "unknown")
+    handoff_message = (
+        f"[CAO Handoff] Supervisor terminal ID: {supervisor_id}. "
+        "This is a blocking handoff — the orchestrator will automatically "
+        "capture your response when you finish. Complete the task and output "
+        "your results directly. Do NOT use send_message to notify the supervisor "
+        "unless explicitly needed — just do the work and present your deliverables.\n\n"
+        f"{message}"
+    )
 
     _send_direct_input(terminal_id, handoff_message)
 
@@ -156,8 +217,9 @@ def _send_direct_input_assign(terminal_id: str, message: str) -> None:
     if ENABLE_SENDER_ID_INJECTION:
         sender_id = os.environ.get("CAO_TERMINAL_ID", "unknown")
         message += (
-            f"\n\n[Assigned by terminal {sender_id}. "
-            f"When done, send results back to terminal {sender_id} using send_message]"
+            f"\n\n[CAO Assign] supervisor_terminal_id={sender_id}. "
+            f"When all work is complete, call: "
+            f'send_message(receiver_id="{sender_id}", message="RUNNER_DONE runner=<your_runner_id>")]'
         )
 
     _send_direct_input(terminal_id, message)
@@ -181,7 +243,7 @@ def _send_to_inbox(receiver_id: str, message: str) -> Dict[str, Any]:
     if not sender_id:
         raise ValueError("CAO_TERMINAL_ID not set - cannot determine sender")
 
-    response = requests.post(
+    response = _http.post(
         f"{API_BASE_URL}/terminals/{receiver_id}/inbox/messages",
         params={"sender_id": sender_id, "message": message},
     )
@@ -191,31 +253,48 @@ def _send_to_inbox(receiver_id: str, message: str) -> Dict[str, Any]:
 
 # Implementation functions
 async def _handoff_impl(
-    agent_profile: str, message: str, timeout: int = 600, working_directory: Optional[str] = None
+    agent_profile: str,
+    message: str,
+    timeout: int = 600,
+    working_directory: Optional[str] = None,
+    display_name: Optional[str] = None,
+    global_folder: Optional[str] = None,
+    output_folder: Optional[str] = None,
+    input_folder: Optional[str] = None,
+    input_folders: Optional[Dict[str, str]] = None,
+    metadata_folder: Optional[str] = None,
+    debug: bool = True,
 ) -> HandoffResult:
-    """Implementation of handoff logic."""
+    """Implementation of handoff logic.
+
+    Args:
+        debug: When True (default), keep the worker tmux window after
+            completion for inspection.  When False, delete the window
+            after capturing output.
+    """
     start_time = time.time()
+
+    # Build the full message: system_prompt + context header + task message
+    system_prompt_header = _load_system_prompt(agent_profile)
+    context_header = _build_context_header(
+        global_folder=global_folder,
+        output_folder=output_folder,
+        input_folder=input_folder,
+        input_folders=input_folders,
+        metadata_folder=metadata_folder,
+    )
+    full_message = system_prompt_header + context_header + message
 
     try:
         # Create terminal
-        terminal_id, provider = _create_terminal(agent_profile, working_directory)
+        terminal_id, provider = _create_terminal(agent_profile, working_directory, display_name)
 
-        # Wait for terminal to be ready (IDLE or COMPLETED) before sending
-        # the handoff message. Accept COMPLETED in addition to IDLE because
-        # providers that use an initial prompt flag process the system prompt
-        # as the first user message and produce a response, reaching COMPLETED
-        # without ever showing a bare IDLE state.
-        # Both states indicate the provider is ready to accept input.
-        #
-        # Use a generous timeout (120s) because provider initialization can be
-        # slow: shell warm-up (~5s), CLI startup with MCP server registration
-        # (~10-30s), and API authentication (~5-10s). If the provider's own
-        # initialize() timed out (60-90s), this acts as a fallback to catch
-        # cases where the CLI starts slightly after the provider timeout.
-        # Provider initialization can be slow (~15-45s depending on provider).
+        # Wait for terminal to be ready (IDLE) before sending the message.
+        # System prompt is no longer injected via CLI flags, so the provider
+        # just needs to reach IDLE (CLI started and ready for input).
         if not wait_until_terminal_status(
             terminal_id,
-            {TerminalStatus.IDLE, TerminalStatus.COMPLETED},
+            {TerminalStatus.IDLE},
             timeout=120.0,
         ):
             return HandoffResult(
@@ -227,8 +306,8 @@ async def _handoff_impl(
 
         await asyncio.sleep(2)  # wait another 2s
 
-        # Send message to terminal (injects handoff instructions for codex if needed)
-        _send_direct_input_handoff(terminal_id, provider, message)
+        # Send message to terminal (prepends [CAO Handoff] header)
+        _send_direct_input_handoff(terminal_id, provider, full_message)
 
         # Monitor until completion with timeout
         if not wait_until_terminal_status(
@@ -242,16 +321,25 @@ async def _handoff_impl(
             )
 
         # Get the response
-        response = requests.get(
+        response = _http.get(
             f"{API_BASE_URL}/terminals/{terminal_id}/output", params={"mode": "last"}
         )
         response.raise_for_status()
         output_data = response.json()
         output = output_data["output"]
 
-        # Send provider-specific exit command to cleanup terminal
-        response = requests.post(f"{API_BASE_URL}/terminals/{terminal_id}/exit")
+        # Send provider-specific exit command and extract session ID
+        response = _http.post(f"{API_BASE_URL}/terminals/{terminal_id}/exit")
         response.raise_for_status()
+        provider_session_id = response.json().get("session_id")
+
+        # Optionally delete the worker tmux window
+        if not debug:
+            time.sleep(2)  # let CLI process exit cleanly
+            try:
+                _http.delete(f"{API_BASE_URL}/terminals/{terminal_id}")
+            except Exception:
+                pass  # non-fatal: window may already be gone
 
         execution_time = time.time() - start_time
 
@@ -260,6 +348,7 @@ async def _handoff_impl(
             message=f"Successfully handed off to {agent_profile} ({provider}) in {execution_time:.2f}s",
             output=output,
             terminal_id=terminal_id,
+            provider_session_id=provider_session_id,
         )
 
     except Exception as e:
@@ -287,45 +376,40 @@ if ENABLE_WORKING_DIRECTORY:
             default=None,
             description='Optional working directory where the agent should execute (e.g., "/path/to/workspace/src/Package")',
         ),
+        global_folder: Optional[str] = Field(
+            default=None, description="Shared folder path accessible by all agents"
+        ),
+        output_folder: Optional[str] = Field(
+            default=None, description="Folder where the agent should write output"
+        ),
+        input_folder: Optional[str] = Field(
+            default=None, description="Primary input folder (e.g., upstream phase output)"
+        ),
+        input_folders: Optional[str] = Field(
+            default=None, description='JSON object mapping dependency names to input paths, e.g. {"phase1":"/path/to/phase1/out"}'
+        ),
+        metadata_folder: Optional[str] = Field(
+            default=None, description="Folder for task-level metadata"
+        ),
+        display_name: Optional[str] = Field(
+            default=None, description="Display name for the tmux window (e.g., 't0-phase1')"
+        ),
+        debug: bool = Field(
+            default=True,
+            description="When True (default), keep worker tmux window after completion for inspection. Set False to auto-delete.",
+        ),
     ) -> HandoffResult:
-        """Hand off a task to another agent via CAO terminal and wait for completion.
-
-        This tool allows handing off tasks to other agents by creating a new terminal
-        in the same session. It sends the message, waits for completion, and captures the output.
-
-        ## Usage
-
-        Use this tool to hand off tasks to another agent and wait for the results.
-        The tool will:
-        1. Create a new terminal with the specified agent profile and provider
-        2. Set the working directory for the terminal (defaults to supervisor's cwd)
-        3. Send the message to the terminal
-        4. Monitor until completion
-        5. Return the agent's response
-        6. Clean up the terminal with /exit
-
-        ## Working Directory
-
-        - By default, agents start in the supervisor's current working directory
-        - You can specify a custom directory via working_directory parameter
-        - Directory must exist and be accessible
-
-        ## Requirements
-
-        - Must be called from within a CAO terminal (CAO_TERMINAL_ID environment variable)
-        - Target session must exist and be accessible
-        - If working_directory is provided, it must exist and be accessible
-
-        Args:
-            agent_profile: The agent profile for the new terminal
-            message: The task/message to send
-            timeout: Maximum wait time in seconds
-            working_directory: Optional directory path where agent should execute
-
-        Returns:
-            HandoffResult with success status, message, and agent output
-        """
-        return await _handoff_impl(agent_profile, message, timeout, working_directory)
+        """Hand off a task to another agent and wait for completion (working_directory enabled)."""
+        return await _handoff_impl(
+            agent_profile, message, timeout, working_directory,
+            display_name=display_name,
+            global_folder=global_folder,
+            output_folder=output_folder,
+            input_folder=input_folder,
+            input_folders=json.loads(input_folders) if input_folders else None,
+            metadata_folder=metadata_folder,
+            debug=debug,
+        )
 
 else:
 
@@ -341,49 +425,72 @@ else:
             ge=1,
             le=3600,
         ),
+        global_folder: Optional[str] = Field(
+            default=None, description="Shared folder path accessible by all agents"
+        ),
+        output_folder: Optional[str] = Field(
+            default=None, description="Folder where the agent should write output"
+        ),
+        input_folder: Optional[str] = Field(
+            default=None, description="Primary input folder (e.g., upstream phase output)"
+        ),
+        input_folders: Optional[str] = Field(
+            default=None, description='JSON object mapping dependency names to input paths, e.g. {"phase1":"/path/to/phase1/out"}'
+        ),
+        metadata_folder: Optional[str] = Field(
+            default=None, description="Folder for task-level metadata"
+        ),
+        display_name: Optional[str] = Field(
+            default=None, description="Display name for the tmux window (e.g., 't0-phase1')"
+        ),
+        debug: bool = Field(
+            default=True,
+            description="When True (default), keep worker tmux window after completion for inspection. Set False to auto-delete.",
+        ),
     ) -> HandoffResult:
-        """Hand off a task to another agent via CAO terminal and wait for completion.
-
-        This tool allows handing off tasks to other agents by creating a new terminal
-        in the same session. It sends the message, waits for completion, and captures the output.
-
-        ## Usage
-
-        Use this tool to hand off tasks to another agent and wait for the results.
-        The tool will:
-        1. Create a new terminal with the specified agent profile and provider
-        2. Send the message to the terminal (starts in supervisor's current directory)
-        3. Monitor until completion
-        4. Return the agent's response
-        5. Clean up the terminal with /exit
-
-        ## Requirements
-
-        - Must be called from within a CAO terminal (CAO_TERMINAL_ID environment variable)
-        - Target session must exist and be accessible
-
-        Args:
-            agent_profile: The agent profile for the new terminal
-            message: The task/message to send
-            timeout: Maximum wait time in seconds
-
-        Returns:
-            HandoffResult with success status, message, and agent output
-        """
-        return await _handoff_impl(agent_profile, message, timeout, None)
+        """Hand off a task to another agent and wait for completion."""
+        return await _handoff_impl(
+            agent_profile, message, timeout, None,
+            display_name=display_name,
+            global_folder=global_folder,
+            output_folder=output_folder,
+            input_folder=input_folder,
+            input_folders=json.loads(input_folders) if input_folders else None,
+            metadata_folder=metadata_folder,
+            debug=debug,
+        )
 
 
 # Implementation function for assign
 def _assign_impl(
-    agent_profile: str, message: str, working_directory: Optional[str] = None
+    agent_profile: str,
+    message: str,
+    working_directory: Optional[str] = None,
+    display_name: Optional[str] = None,
+    global_folder: Optional[str] = None,
+    output_folder: Optional[str] = None,
+    input_folder: Optional[str] = None,
+    input_folders: Optional[Dict[str, str]] = None,
+    metadata_folder: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Implementation of assign logic."""
     try:
+        # Build the full message: system_prompt + context header + task message
+        system_prompt_header = _load_system_prompt(agent_profile)
+        context_header = _build_context_header(
+            global_folder=global_folder,
+            output_folder=output_folder,
+            input_folder=input_folder,
+            input_folders=input_folders,
+            metadata_folder=metadata_folder,
+        )
+        full_message = system_prompt_header + context_header + message
+
         # Create terminal
-        terminal_id, _ = _create_terminal(agent_profile, working_directory)
+        terminal_id, _ = _create_terminal(agent_profile, working_directory, display_name)
 
         # Send message immediately (auto-injects sender terminal ID suffix when enabled)
-        _send_direct_input_assign(terminal_id, message)
+        _send_direct_input_assign(terminal_id, full_message)
 
         return {
             "success": True,
@@ -459,8 +566,34 @@ if ENABLE_WORKING_DIRECTORY:
         working_directory: Optional[str] = Field(
             default=None, description="Optional working directory where the agent should execute"
         ),
+        global_folder: Optional[str] = Field(
+            default=None, description="Shared folder path accessible by all agents"
+        ),
+        output_folder: Optional[str] = Field(
+            default=None, description="Folder where the agent should write output"
+        ),
+        input_folder: Optional[str] = Field(
+            default=None, description="Primary input folder (e.g., upstream phase output)"
+        ),
+        input_folders: Optional[str] = Field(
+            default=None, description='JSON object mapping dependency names to input paths'
+        ),
+        metadata_folder: Optional[str] = Field(
+            default=None, description="Folder for task-level metadata"
+        ),
+        display_name: Optional[str] = Field(
+            default=None, description="Human-readable name for the terminal window"
+        ),
     ) -> Dict[str, Any]:
-        return _assign_impl(agent_profile, message, working_directory)
+        return _assign_impl(
+            agent_profile, message, working_directory,
+            display_name=display_name,
+            global_folder=global_folder,
+            output_folder=output_folder,
+            input_folder=input_folder,
+            input_folders=json.loads(input_folders) if input_folders else None,
+            metadata_folder=metadata_folder,
+        )
 
 else:
 
@@ -470,8 +603,34 @@ else:
             description='The agent profile for the worker agent (e.g., "developer", "analyst")'
         ),
         message: str = Field(description=_assign_message_field_desc),
+        global_folder: Optional[str] = Field(
+            default=None, description="Shared folder path accessible by all agents"
+        ),
+        output_folder: Optional[str] = Field(
+            default=None, description="Folder where the agent should write output"
+        ),
+        input_folder: Optional[str] = Field(
+            default=None, description="Primary input folder (e.g., upstream phase output)"
+        ),
+        input_folders: Optional[str] = Field(
+            default=None, description='JSON object mapping dependency names to input paths'
+        ),
+        metadata_folder: Optional[str] = Field(
+            default=None, description="Folder for task-level metadata"
+        ),
+        display_name: Optional[str] = Field(
+            default=None, description="Human-readable name for the terminal window"
+        ),
     ) -> Dict[str, Any]:
-        return _assign_impl(agent_profile, message, None)
+        return _assign_impl(
+            agent_profile, message, None,
+            display_name=display_name,
+            global_folder=global_folder,
+            output_folder=output_folder,
+            input_folder=input_folder,
+            input_folders=json.loads(input_folders) if input_folders else None,
+            metadata_folder=metadata_folder,
+        )
 
 
 # Implementation function for send_message

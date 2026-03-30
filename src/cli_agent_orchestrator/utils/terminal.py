@@ -3,7 +3,7 @@
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import httpx
 
@@ -28,9 +28,10 @@ def generate_terminal_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
-def generate_window_name(agent_profile: str) -> str:
-    """Generate window name from agent profile with unique suffix."""
-    return f"{agent_profile}-{uuid.uuid4().hex[:4]}"
+def generate_window_name(agent_profile: str, display_name: Optional[str] = None) -> str:
+    """Generate window name from display_name (or agent_profile) with unique suffix."""
+    base = display_name or agent_profile
+    return f"{base}-{uuid.uuid4().hex[:4]}"
 
 
 def wait_for_shell(
@@ -105,7 +106,11 @@ def wait_until_terminal_status(
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            response = httpx.get(f"{API_BASE_URL}/terminals/{terminal_id}", timeout=10.0)
+            response = httpx.get(
+                f"{API_BASE_URL}/terminals/{terminal_id}",
+                timeout=10.0,
+                proxy=None,  # bypass HTTP_PROXY for localhost
+            )
             logger.info(response)
             if response.status_code == 200:
                 terminal_data = response.json()
