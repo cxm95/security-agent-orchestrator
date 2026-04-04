@@ -12,6 +12,7 @@ from cli_agent_orchestrator.providers.codex import CodexProvider
 from cli_agent_orchestrator.providers.copilot_cli import CopilotCliProvider
 from cli_agent_orchestrator.providers.gemini_cli import GeminiCliProvider
 from cli_agent_orchestrator.providers.kimi_cli import KimiCliProvider
+from cli_agent_orchestrator.providers.huntdex import HuntdexProvider
 from cli_agent_orchestrator.providers.kiro_cli import KiroCliProvider
 from cli_agent_orchestrator.providers.opencode import OpenCodeProvider
 from cli_agent_orchestrator.providers.q_cli import QCliProvider
@@ -70,10 +71,23 @@ class ProviderManager:
             elif provider_type == ProviderType.CLOTHER_MINIMAX_CN.value:
                 provider = ClotherMinimaxCnProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.SCRIPT.value:
-                raise ValueError(
-                    "ScriptProvider requires script_path which cannot be supplied "
-                    "through create_provider(). Use create_script_provider() instead."
+                # Script provider: read script_path from the agent profile
+                from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile as _load_profile
+                profile = _load_profile(agent_profile) if agent_profile else None
+                if not profile or not profile.script_path:
+                    raise ValueError(
+                        "ScriptProvider requires script_path in the agent profile frontmatter. "
+                        "Add 'script_path: /path/to/script' to the profile's YAML header."
+                    )
+                provider = ScriptProvider(
+                    terminal_id, tmux_session, tmux_window,
+                    script_path=profile.script_path,
+                    script_args=profile.script_args or [],
+                    env_vars=profile.env_vars,
+                    agent_profile=agent_profile,
                 )
+            elif provider_type == ProviderType.HUNTDEX.value:
+                provider = HuntdexProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             else:
                 raise ValueError(f"Unknown provider type: {provider_type}")
 

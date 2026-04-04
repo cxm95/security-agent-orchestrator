@@ -78,7 +78,7 @@ export default function App() {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center">
               <Bot size={18} className="text-white" />
             </div>
-            <h1 className="text-lg font-bold text-white">CLI Agent Orchestrator</h1>
+            <h1 className="text-lg font-bold text-white">ICSL SecAgentGym</h1>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-xs text-gray-500">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>

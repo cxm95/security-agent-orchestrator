@@ -30,6 +30,20 @@ ENABLE_WORKING_DIRECTORY = os.getenv("CAO_ENABLE_WORKING_DIRECTORY", "false").lo
 # Environment variable to enable/disable automatic sender terminal ID injection
 ENABLE_SENDER_ID_INJECTION = os.getenv("CAO_ENABLE_SENDER_ID_INJECTION", "false").lower() == "true"
 
+# When true, session_root / global_folder / output_folder become REQUIRED
+# in assign/handoff tool schemas (no default → model must provide them).
+REQUIRE_CONTEXT_FOLDERS = os.getenv("CAO_REQUIRE_CONTEXT_FOLDERS", "false").lower() == "true"
+
+# Shared Field definitions — required vs optional based on env flag
+if REQUIRE_CONTEXT_FOLDERS:
+    _CTX_SESSION_ROOT = Field(description="Session root directory path (REQUIRED). Forwarded to worker via [CAO Context] header.")
+    _CTX_GLOBAL_FOLDER = Field(description="Shared folder path accessible by all agents (REQUIRED). Typically returned by prepare_phase_context.")
+    _CTX_OUTPUT_FOLDER = Field(description="Folder where the agent should write output (REQUIRED). Typically returned by prepare_phase_context.")
+else:
+    _CTX_SESSION_ROOT = Field(default=None, description="Session root directory path, forwarded to worker via [CAO Context] header")
+    _CTX_GLOBAL_FOLDER = Field(default=None, description="Shared folder path accessible by all agents")
+    _CTX_OUTPUT_FOLDER = Field(default=None, description="Folder where the agent should write output")
+
 
 def _build_context_header(
     global_folder: Optional[str] = None,
@@ -37,12 +51,15 @@ def _build_context_header(
     input_folder: Optional[str] = None,
     input_folders: Optional[Dict[str, str]] = None,
     metadata_folder: Optional[str] = None,
+    session_root: Optional[str] = None,
 ) -> str:
     """Build a [CAO Context] header from optional folder params.
 
     Returns empty string when all params are None/empty.
     """
     ctx: Dict[str, Any] = {}
+    if session_root:
+        ctx["session_root"] = session_root
     if global_folder:
         ctx["global_folder"] = global_folder
     if output_folder:
@@ -93,6 +110,7 @@ def _create_terminal(
     agent_profile: str,
     working_directory: Optional[str] = None,
     display_name: Optional[str] = None,
+    provider_override: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Create a new terminal with the specified agent profile.
 
@@ -100,6 +118,8 @@ def _create_terminal(
         agent_profile: Agent profile for the terminal
         working_directory: Optional working directory for the terminal
         display_name: Optional display name for the tmux window
+        provider_override: Optional provider type to use instead of inheriting
+            from the parent terminal (e.g., "script", "opencode")
 
     Returns:
         Tuple of (terminal_id, provider)
@@ -119,6 +139,10 @@ def _create_terminal(
 
         provider = terminal_metadata["provider"]
         session_name = terminal_metadata["session_name"]
+
+        # Allow caller to override the provider type (e.g., script → opencode)
+        if provider_override:
+            provider = provider_override
 
         # If no working_directory specified, get conductor's current directory
         if working_directory is None:
@@ -255,7 +279,7 @@ def _send_to_inbox(receiver_id: str, message: str) -> Dict[str, Any]:
 async def _handoff_impl(
     agent_profile: str,
     message: str,
-    timeout: int = 600,
+    timeout: int = 1800,
     working_directory: Optional[str] = None,
     display_name: Optional[str] = None,
     global_folder: Optional[str] = None,
@@ -263,7 +287,9 @@ async def _handoff_impl(
     input_folder: Optional[str] = None,
     input_folders: Optional[Dict[str, str]] = None,
     metadata_folder: Optional[str] = None,
+    session_root: Optional[str] = None,
     debug: bool = True,
+    provider: Optional[str] = None,
 ) -> HandoffResult:
     """Implementation of handoff logic.
 
@@ -271,7 +297,15 @@ async def _handoff_impl(
         debug: When True (default), keep the worker tmux window after
             completion for inspection.  When False, delete the window
             after capturing output.
+        provider: Optional provider type override.  When set, the child
+            terminal uses this provider instead of inheriting the parent's.
     """
+    # Validate required context folders BEFORE creating terminal
+    if REQUIRE_CONTEXT_FOLDERS:
+        missing = [k for k, v in {"session_root": session_root, "global_folder": global_folder, "output_folder": output_folder}.items() if not v]
+        if missing:
+            raise ValueError(f"CAO_REQUIRE_CONTEXT_FOLDERS is enabled — the following required parameters are missing or null: {', '.join(missing)}")
+
     start_time = time.time()
 
     # Build the full message: system_prompt + context header + task message
@@ -282,32 +316,38 @@ async def _handoff_impl(
         input_folder=input_folder,
         input_folders=input_folders,
         metadata_folder=metadata_folder,
+        session_root=session_root,
     )
     full_message = system_prompt_header + context_header + message
 
     try:
         # Create terminal
-        terminal_id, provider = _create_terminal(agent_profile, working_directory, display_name)
+        terminal_id, provider_used = _create_terminal(
+            agent_profile, working_directory, display_name, provider_override=provider
+        )
 
-        # Wait for terminal to be ready (IDLE) before sending the message.
-        # System prompt is no longer injected via CLI flags, so the provider
-        # just needs to reach IDLE (CLI started and ready for input).
-        if not wait_until_terminal_status(
-            terminal_id,
-            {TerminalStatus.IDLE},
-            timeout=120.0,
-        ):
-            return HandoffResult(
-                success=False,
-                message=f"Terminal {terminal_id} did not reach ready status within 120 seconds",
-                output=None,
-                terminal_id=terminal_id,
-            )
+        # Script provider: the script is already running after initialize().
+        # Skip IDLE wait and message send — go straight to waiting for completion.
+        if provider_used == "script":
+            logger.info(f"Script provider: waiting for completion (timeout={timeout}s)")
+        else:
+            # Wait for terminal to be ready (IDLE) before sending the message.
+            if not wait_until_terminal_status(
+                terminal_id,
+                {TerminalStatus.IDLE},
+                timeout=120.0,
+            ):
+                return HandoffResult(
+                    success=False,
+                    message=f"Terminal {terminal_id} did not reach ready status within 120 seconds",
+                    output=None,
+                    terminal_id=terminal_id,
+                )
 
-        await asyncio.sleep(2)  # wait another 2s
+            await asyncio.sleep(2)  # wait another 2s
 
-        # Send message to terminal (prepends [CAO Handoff] header)
-        _send_direct_input_handoff(terminal_id, provider, full_message)
+            # Send message to terminal (prepends [CAO Handoff] header)
+            _send_direct_input_handoff(terminal_id, provider_used, full_message)
 
         # Monitor until completion with timeout
         if not wait_until_terminal_status(
@@ -345,7 +385,7 @@ async def _handoff_impl(
 
         return HandoffResult(
             success=True,
-            message=f"Successfully handed off to {agent_profile} ({provider}) in {execution_time:.2f}s",
+            message=f"Successfully handed off to {agent_profile} ({provider_used}) in {execution_time:.2f}s",
             output=output,
             terminal_id=terminal_id,
             provider_session_id=provider_session_id,
@@ -366,21 +406,18 @@ if ENABLE_WORKING_DIRECTORY:
             description='The agent profile to hand off to (e.g., "developer", "analyst")'
         ),
         message: str = Field(description="The message/task to send to the target agent"),
+        session_root: Optional[str] = _CTX_SESSION_ROOT,
+        global_folder: Optional[str] = _CTX_GLOBAL_FOLDER,
+        output_folder: Optional[str] = _CTX_OUTPUT_FOLDER,
         timeout: int = Field(
-            default=600,
-            description="Maximum time to wait for the agent to complete the task (in seconds)",
+            default=1800,
+            description="Maximum time to wait for the agent to complete the task (in seconds). Default 1800 (30min).",
             ge=1,
-            le=3600,
+            le=86400,
         ),
         working_directory: Optional[str] = Field(
             default=None,
             description='Optional working directory where the agent should execute (e.g., "/path/to/workspace/src/Package")',
-        ),
-        global_folder: Optional[str] = Field(
-            default=None, description="Shared folder path accessible by all agents"
-        ),
-        output_folder: Optional[str] = Field(
-            default=None, description="Folder where the agent should write output"
         ),
         input_folder: Optional[str] = Field(
             default=None, description="Primary input folder (e.g., upstream phase output)"
@@ -397,6 +434,10 @@ if ENABLE_WORKING_DIRECTORY:
         debug: bool = Field(
             default=True,
             description="When True (default), keep worker tmux window after completion for inspection. Set False to auto-delete.",
+        ),
+        provider: Optional[str] = Field(
+            default=None,
+            description='Override the provider type for the child terminal (e.g., "script", "opencode"). If omitted, inherits from parent.',
         ),
     ) -> HandoffResult:
         """Hand off a task to another agent and wait for completion (working_directory enabled)."""
@@ -408,7 +449,9 @@ if ENABLE_WORKING_DIRECTORY:
             input_folder=input_folder,
             input_folders=json.loads(input_folders) if input_folders else None,
             metadata_folder=metadata_folder,
+            session_root=session_root,
             debug=debug,
+            provider=provider,
         )
 
 else:
@@ -419,17 +462,14 @@ else:
             description='The agent profile to hand off to (e.g., "developer", "analyst")'
         ),
         message: str = Field(description="The message/task to send to the target agent"),
+        session_root: Optional[str] = _CTX_SESSION_ROOT,
+        global_folder: Optional[str] = _CTX_GLOBAL_FOLDER,
+        output_folder: Optional[str] = _CTX_OUTPUT_FOLDER,
         timeout: int = Field(
-            default=600,
-            description="Maximum time to wait for the agent to complete the task (in seconds)",
+            default=1800,
+            description="Maximum time to wait for the agent to complete the task (in seconds). Default 1800 (30min).",
             ge=1,
-            le=3600,
-        ),
-        global_folder: Optional[str] = Field(
-            default=None, description="Shared folder path accessible by all agents"
-        ),
-        output_folder: Optional[str] = Field(
-            default=None, description="Folder where the agent should write output"
+            le=86400,
         ),
         input_folder: Optional[str] = Field(
             default=None, description="Primary input folder (e.g., upstream phase output)"
@@ -447,6 +487,10 @@ else:
             default=True,
             description="When True (default), keep worker tmux window after completion for inspection. Set False to auto-delete.",
         ),
+        provider: Optional[str] = Field(
+            default=None,
+            description='Override the provider type for the child terminal (e.g., "script", "opencode"). If omitted, inherits from parent.',
+        ),
     ) -> HandoffResult:
         """Hand off a task to another agent and wait for completion."""
         return await _handoff_impl(
@@ -457,7 +501,9 @@ else:
             input_folder=input_folder,
             input_folders=json.loads(input_folders) if input_folders else None,
             metadata_folder=metadata_folder,
+            session_root=session_root,
             debug=debug,
+            provider=provider,
         )
 
 
@@ -472,8 +518,16 @@ def _assign_impl(
     input_folder: Optional[str] = None,
     input_folders: Optional[Dict[str, str]] = None,
     metadata_folder: Optional[str] = None,
+    session_root: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Implementation of assign logic."""
+    # Validate required context folders BEFORE creating terminal
+    if REQUIRE_CONTEXT_FOLDERS:
+        missing = [k for k, v in {"session_root": session_root, "global_folder": global_folder, "output_folder": output_folder}.items() if not v]
+        if missing:
+            return {"success": False, "terminal_id": None, "message": f"CAO_REQUIRE_CONTEXT_FOLDERS is enabled — the following required parameters are missing or null: {', '.join(missing)}"}
+
     try:
         # Build the full message: system_prompt + context header + task message
         system_prompt_header = _load_system_prompt(agent_profile)
@@ -483,11 +537,14 @@ def _assign_impl(
             input_folder=input_folder,
             input_folders=input_folders,
             metadata_folder=metadata_folder,
+            session_root=session_root,
         )
         full_message = system_prompt_header + context_header + message
 
         # Create terminal
-        terminal_id, _ = _create_terminal(agent_profile, working_directory, display_name)
+        terminal_id, _ = _create_terminal(
+            agent_profile, working_directory, display_name, provider_override=provider
+        )
 
         # Send message immediately (auto-injects sender terminal ID suffix when enabled)
         _send_direct_input_assign(terminal_id, full_message)
@@ -563,14 +620,11 @@ if ENABLE_WORKING_DIRECTORY:
             description='The agent profile for the worker agent (e.g., "developer", "analyst")'
         ),
         message: str = Field(description=_assign_message_field_desc),
+        session_root: Optional[str] = _CTX_SESSION_ROOT,
+        global_folder: Optional[str] = _CTX_GLOBAL_FOLDER,
+        output_folder: Optional[str] = _CTX_OUTPUT_FOLDER,
         working_directory: Optional[str] = Field(
             default=None, description="Optional working directory where the agent should execute"
-        ),
-        global_folder: Optional[str] = Field(
-            default=None, description="Shared folder path accessible by all agents"
-        ),
-        output_folder: Optional[str] = Field(
-            default=None, description="Folder where the agent should write output"
         ),
         input_folder: Optional[str] = Field(
             default=None, description="Primary input folder (e.g., upstream phase output)"
@@ -583,6 +637,10 @@ if ENABLE_WORKING_DIRECTORY:
         ),
         display_name: Optional[str] = Field(
             default=None, description="Human-readable name for the terminal window"
+        ),
+        provider: Optional[str] = Field(
+            default=None,
+            description='Override the provider type for the child terminal (e.g., "script", "opencode"). If omitted, inherits from parent.',
         ),
     ) -> Dict[str, Any]:
         return _assign_impl(
@@ -593,6 +651,8 @@ if ENABLE_WORKING_DIRECTORY:
             input_folder=input_folder,
             input_folders=json.loads(input_folders) if input_folders else None,
             metadata_folder=metadata_folder,
+            session_root=session_root,
+            provider=provider,
         )
 
 else:
@@ -603,12 +663,9 @@ else:
             description='The agent profile for the worker agent (e.g., "developer", "analyst")'
         ),
         message: str = Field(description=_assign_message_field_desc),
-        global_folder: Optional[str] = Field(
-            default=None, description="Shared folder path accessible by all agents"
-        ),
-        output_folder: Optional[str] = Field(
-            default=None, description="Folder where the agent should write output"
-        ),
+        session_root: Optional[str] = _CTX_SESSION_ROOT,
+        global_folder: Optional[str] = _CTX_GLOBAL_FOLDER,
+        output_folder: Optional[str] = _CTX_OUTPUT_FOLDER,
         input_folder: Optional[str] = Field(
             default=None, description="Primary input folder (e.g., upstream phase output)"
         ),
@@ -621,6 +678,10 @@ else:
         display_name: Optional[str] = Field(
             default=None, description="Human-readable name for the terminal window"
         ),
+        provider: Optional[str] = Field(
+            default=None,
+            description='Override the provider type for the child terminal (e.g., "script", "opencode"). If omitted, inherits from parent.',
+        ),
     ) -> Dict[str, Any]:
         return _assign_impl(
             agent_profile, message, None,
@@ -630,6 +691,8 @@ else:
             input_folder=input_folder,
             input_folders=json.loads(input_folders) if input_folders else None,
             metadata_folder=metadata_folder,
+            session_root=session_root,
+            provider=provider,
         )
 
 

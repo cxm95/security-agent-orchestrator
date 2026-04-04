@@ -14,3 +14,4 @@ class ProviderType(str, Enum):
     OPENCODE = "opencode"
     CLOTHER_MINIMAX_CN = "clother_minimax_cn"
     SCRIPT = "script"
+    HUNTDEX = "huntdex"

@@ -69,8 +69,8 @@ INPUT_IDLE_PATTERN = r"^\s*┃\s*$"
 SPINNER_PATTERN = r"esc\s+interrupt"
 
 # === COMPLETED detection ===
-# Completed marker with timing: ▣  Build · model-name · 5.2s
-COMPLETED_MARKER_PATTERN = r"▣\s+Build\s+·\s+\S+.*·\s+[\d.]+s"
+# Completed marker with timing: ▣  Build · model-name · 5.2s (or 3m 20s, 1h 5m 20s)
+COMPLETED_MARKER_PATTERN = r"▣\s+Build\s+·\s+\S+.*·\s+[\dhms. ]+s"
 # Build marker without timing (still processing or just started)
 BUILD_MARKER_PATTERN = r"▣\s+Build\s+·\s+\S+"
 
@@ -322,6 +322,12 @@ class OpenCodeProvider(BaseProvider):
         # 5) If we see thinking blocks, agent is processing
         if re.search(THINKING_PATTERN, clean_output):
             return TerminalStatus.PROCESSING
+
+        # 6) EXITED: OpenCode has exited and shows session restore hint
+        #    After exit, the pane shows "opencode -s ses_xxx" and a shell prompt.
+        #    None of the TUI patterns (footer, spinner, build marker) will match.
+        if re.search(SESSION_ID_PATTERN, clean_output):
+            return TerminalStatus.COMPLETED
 
         # Default: if we can't determine state, assume processing
         return TerminalStatus.PROCESSING

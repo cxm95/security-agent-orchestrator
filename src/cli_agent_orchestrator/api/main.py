@@ -256,6 +256,7 @@ async def create_session(
     session_name: Optional[str] = None,
     working_directory: Optional[str] = None,
     display_name: Optional[str] = None,
+    initial_prompt: Optional[str] = None,
 ) -> Terminal:
     """Create a new session with exactly one terminal."""
     try:
@@ -266,6 +267,7 @@ async def create_session(
             new_session=True,
             working_directory=working_directory,
             display_name=display_name,
+            initial_prompt=initial_prompt,
         )
         return result
 

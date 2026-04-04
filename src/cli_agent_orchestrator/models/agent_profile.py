@@ -40,3 +40,8 @@ class AgentProfile(BaseModel):
     hooks: Optional[Dict[str, Any]] = None
     useLegacyMcpJson: Optional[bool] = None
     model: Optional[str] = None
+
+    # Script provider fields (used when provider == "script")
+    script_path: Optional[str] = None
+    script_args: Optional[List[str]] = None
+    env_vars: Optional[Dict[str, str]] = None

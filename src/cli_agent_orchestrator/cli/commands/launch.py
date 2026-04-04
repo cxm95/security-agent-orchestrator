@@ -28,7 +28,13 @@ PROVIDERS_REQUIRING_WORKSPACE_ACCESS = {
     "--provider", default=DEFAULT_PROVIDER, help=f"Provider to use (default: {DEFAULT_PROVIDER})"
 )
 @click.option("--yolo", is_flag=True, help="Skip workspace trust confirmation")
-def launch(agents, session_name, headless, provider, yolo):
+@click.option(
+    "--initial-prompt-file",
+    default=None,
+    type=click.Path(exists=True),
+    help="File containing initial prompt to send after system prompt",
+)
+def launch(agents, session_name, headless, provider, yolo, initial_prompt_file):
     """Launch cao session with specified agent profile."""
     try:
         # Validate provider
@@ -61,6 +67,9 @@ def launch(agents, session_name, headless, provider, yolo):
         }
         if session_name:
             params["session_name"] = session_name
+        if initial_prompt_file:
+            with open(initial_prompt_file) as f:
+                params["initial_prompt"] = f.read()
 
         response = requests.post(url, params=params)
         response.raise_for_status()

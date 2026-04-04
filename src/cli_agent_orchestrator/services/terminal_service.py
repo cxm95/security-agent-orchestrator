@@ -63,6 +63,7 @@ def create_terminal(
     working_directory: Optional[str] = None,
     display_name: Optional[str] = None,
     send_system_prompt: bool = True,
+    initial_prompt: Optional[str] = None,
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
@@ -129,6 +130,12 @@ def create_terminal(
         provider_instance = provider_manager.create_provider(
             provider, terminal_id, session_name, window_name, agent_profile
         )
+
+        # Step 4.1: Inject CAO_TERMINAL_ID for script provider so child MCP
+        # servers spawned by the script can identify this terminal.
+        if provider == "script":
+            provider_instance.set_env_vars({"CAO_TERMINAL_ID": terminal_id})
+
         provider_instance.initialize()
 
         # Step 4.5: Send system prompt as the first message (when enabled)
@@ -136,7 +143,8 @@ def create_terminal(
         # prepended to the first user message.  For child agents created via
         # handoff/assign the MCP server handles this, but for the initial
         # (supervisor) terminal launched by ``cao launch`` we must do it here.
-        if send_system_prompt:
+        # Script provider: skip — scripts read args, not stdin.
+        if send_system_prompt and provider != "script":
             try:
                 profile = load_agent_profile(agent_profile)
                 if profile and profile.system_prompt:
@@ -151,6 +159,21 @@ def create_terminal(
             except Exception as prompt_err:
                 logger.warning(
                     f"Failed to send system prompt for '{agent_profile}': {prompt_err}"
+                )
+
+        # Step 4.6: Send initial prompt (when provided, after system prompt)
+        if initial_prompt:
+            try:
+                import time
+                time.sleep(2)
+                tmux_client.send_keys(
+                    session_name, window_name, initial_prompt,
+                    enter_count=provider_instance.paste_enter_count,
+                )
+                logger.info(f"Sent initial prompt to terminal {terminal_id}")
+            except Exception as prompt_err:
+                logger.warning(
+                    f"Failed to send initial prompt to terminal {terminal_id}: {prompt_err}"
                 )
 
         # Step 5: Set up terminal logging via tmux pipe-pane

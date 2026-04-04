@@ -350,6 +350,47 @@ You can combine the three orchestration modes above into custom workflows, or cr
 
 For complete API documentation, see [docs/api.md](docs/api.md).
 
+## Timeout Settings
+
+CAO has multiple timeout layers. For long-running workflows, you may need to tune more than one of them.
+
+### Commonly adjusted settings
+
+| Layer | Where to set it | Default / common value | What it controls |
+|------|------------------|------------------------|------------------|
+| MCP tool-call timeout (OpenCode) | `opencode.json` → `experimental.mcp_timeout` | Often set to `86400000` ms | Maximum duration of a single MCP tool call from the provider side |
+| Agent profile MCP server timeout | Agent frontmatter → `mcpServers.<name>.timeout` | Commonly `86400000` ms | How long the provider allows calls to that MCP server |
+| Handoff completion timeout | `handoff(timeout=...)` | CAO default is `1800` s if omitted | How long the supervisor/runner waits for the delegated task to reach `COMPLETED` |
+
+### CAO built-in defaults that matter
+
+- `cli_agent_orchestrator/mcp_server/server.py`
+  - `handoff(..., timeout=1800)` default completion wait
+  - terminal ready wait before sending the task: `120` seconds
+- `cli_agent_orchestrator/utils/terminal.py`
+  - `wait_until_terminal_status(..., timeout=30.0, polling_interval=1.0)`
+  - terminal status HTTP poll request timeout: `10.0` seconds
+- `cli_agent_orchestrator/providers/opencode.py`
+  - provider init wait is `60.0` seconds
+- `cli_agent_orchestrator/providers/kimi_cli.py`
+  - enforces MCP `tool_call_timeout_ms >= 600000` in `~/.kimi/config.toml`
+
+### About `flow_service`
+
+`flow_service.py` is the backend service used by CAO's scheduled **Flows** feature. It loads flow definitions, optionally runs a pre-launch script, renders the prompt, and launches the target agent session.
+
+Important timeout note:
+
+- `cli_agent_orchestrator/services/flow_service.py` currently runs the optional flow script with `subprocess.run(..., timeout=30)`.
+- This `30`-second timeout applies only to the flow's preparatory script, not to normal `handoff()` execution inside your supervisor/runner workflows.
+- If you are not using scheduled Flows, this timeout does not affect your current `cao-oh-heng-proj` phase execution path.
+
+### Practical guidance
+
+- For long-running worker phases, explicitly pass `timeout=` in every important `handoff()` call instead of relying on the CAO default `1800` seconds.
+- If you use OpenCode, ensure both `opencode.json.experimental.mcp_timeout` and the agent profile's `mcpServers.*.timeout` are large enough.
+- If a worker can finish after the caller times out, treat output markers such as `done.json` as the source of truth before marking the task failed.
+
 ## Flows - Scheduled Agent Sessions
 
 Flows allow you to schedule agent sessions to run automatically based on cron expressions.
