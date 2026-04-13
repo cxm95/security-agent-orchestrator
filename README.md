@@ -4,6 +4,41 @@
 
 CLI Agent Orchestrator(CAO, pronounced as "kay-oh"), is a lightweight orchestration system for managing multiple AI agent sessions in tmux terminals. Enables Multi-agent collaboration via MCP server.
 
+## Recent Changes
+
+### New Features
+
+- **OpenCode Provider** — Full provider for the [OpenCode](https://github.com/opencode-ai/opencode) TUI AI coding agent, including lifecycle management, alternate-screen buffer parsing for status detection, response extraction, session persistence (`ses_xxx` resumption), auto-approve mode, and model selection. See [Provider Features](#provider-features) for details.
+- **Script Provider** — Lightweight provider for running arbitrary shell scripts/commands in tmux sessions. Detects completion via shell prompt, strips invocation lines, supports custom environment variables and Ctrl-C interruption. See [Provider Features → Script Provider](#script-provider).
+- **Huntdex Provider** — Provider for delegating tasks to a Huntdex API server via `copilot-ui.py` REPL with status detection and output extraction.
+- **Clother MiniMax CN Provider** — Provider subclassing Claude Code that replaces the `claude` binary with `clother-minimax-cn`.
+- **`cao-mcp-task-context` MCP Server** — New companion FastMCP tool server for structured directory context management in multi-agent phase workflows. Provides tools like `init_session`, `get_workflow`, `prepare_task`, `prepare_phase_context`, `write_task_meta`, and more. See [Context Folders → cao-mcp-task-context](#cao-mcp-task-context).
+- **Context Folder Parameters** — `handoff` and `assign` now accept `global_folder`, `output_folder`, `input_folder`, `input_folders`, `metadata_folder`, and `session_root` parameters, serialized into a `[CAO Context]` JSON header. See [Context Folders](#context-folders).
+- **Provider Override on Handoff/Assign** — New `provider` parameter lets callers override the child terminal's provider type instead of inheriting from the parent. See [Cross-Provider Orchestration](#cross-provider-orchestration).
+- **Configurable Required Context Folders** — Set env var `CAO_REQUIRE_CONTEXT_FOLDERS=true` to make `session_root`, `global_folder`, and `output_folder` required with validation.
+- **Display Name for Tmux Windows** — New `display_name` parameter flows through the API to generate human-readable tmux window names (e.g., `t0-phase1`).
+- **Debug Mode for Handoff** — `handoff` accepts a `debug` flag (default `True`); when `False`, the worker tmux window is deleted after output capture.
+- **Remote/SSE MCP Server Support** — `McpServer` model gains a `url` field for `remote` type servers. Claude Code maps `remote` → `sse`; OpenCode builds native remote config. See [Remote MCP Servers (SSE)](#remote-mcp-servers-sse).
+- **`--initial-prompt-file` CLI Option** — New flag on `cao launch` reads a file and sends its content as the first prompt after the system prompt.
+- **Provider Session ID on Exit** — `exit_terminal` calls `provider.graceful_exit()` to extract provider-specific session IDs (e.g., OpenCode `ses_xxx`) returned in the response.
+- **Base Provider Env Var Support** — `set_env_vars()` and `_apply_env_vars()` added to `BaseProvider` with POSIX validation and `shlex.quote()` escaping. See [Provider Features → Environment Variables](#environment-variables).
+
+### Bug Fixes & Improvements
+
+- **System prompt injection rework** — System prompts are no longer injected via CLI flags (which had shell-escaping issues). Instead, a `[System Prompt]` block is prepended to the first message. See [System Prompt Injection](#system-prompt-injection).
+- **Proxy bypass for localhost API calls** — All internal `requests` calls use `trust_env=False`; Codex/OpenCode unset `HTTP_PROXY`/`HTTPS_PROXY` to prevent external proxies from intercepting localhost traffic.
+- **Handoff header applied to all providers** — `[CAO Handoff]` header is now prepended for all provider types, not just Codex.
+- **Improved assign message format** — Assign suffix uses structured `[CAO Assign]` tag with explicit `send_message` call syntax.
+- **Handoff default timeout raised** — Default timeout increased from 600s to 1800s; max timeout raised from 3600s to 86400s (24h) for long-running workflows.
+- **Wait-for-ready simplified** — Providers now only wait for `IDLE` (not `IDLE | COMPLETED`) before the first message, since system prompts are no longer auto-submitted via CLI flags.
+- **OpenCode COMPLETED regex fix** — Pattern updated to match multi-unit durations (e.g., `3m 20s`) — previously caused false negatives.
+- **OpenCode detect COMPLETED after exit** — If OpenCode's session ID pattern matches (process exited), status now correctly returns `COMPLETED` instead of stalling in `PROCESSING`.
+- **Codex `--full-auto` and `--dangerously-bypass-approvals-and-sandbox`** — Both flags are now included for fully autonomous Codex execution.
+- **Codex tool timeout reduced** — Default MCP `tool_timeout_sec` lowered from 600s to 120s.
+- **Script provider orchestration fixes** — Handoff skips IDLE-wait and message-send for script providers (already running after `initialize()`); `CAO_TERMINAL_ID` env var auto-injected; system prompt no longer sent via stdin.
+- **Terminal listing sort order** — `list_terminals_by_session` sorts by `agent_profile` (NULLs last) for deterministic display order.
+- **Aggregated status badges in Web UI** — Terminal statuses aggregated by count (e.g., "IDLE (3)") instead of one badge per terminal.
+
 ## Hierarchical Multi-Agent System
 
 CLI Agent Orchestrator (CAO) implements a hierarchical multi-agent system that enables complex problem-solving through specialized division of CLI Developer Agents.
