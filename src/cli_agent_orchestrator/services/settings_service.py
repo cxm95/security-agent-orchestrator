@@ -13,8 +13,6 @@ SETTINGS_FILE = CAO_HOME_DIR / "settings.json"
 
 # Default agent directories per provider
 _DEFAULTS = {
-    "kiro_cli": str(Path.home() / ".kiro" / "agents"),
-    "q_cli": str(Path.home() / ".aws" / "amazonq" / "cli-agents"),
     "claude_code": str(Path.home() / ".aws" / "cli-agent-orchestrator" / "agent-store"),
     "codex": str(Path.home() / ".aws" / "cli-agent-orchestrator" / "agent-store"),
     "opencode": str(Path.home() / ".aws" / "cli-agent-orchestrator" / "agent-store"),

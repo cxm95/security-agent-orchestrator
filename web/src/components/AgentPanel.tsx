@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { api, AgentProfileInfo, ProviderInfo } from '../api'
-import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
+import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Search, Mail, Plus, LogOut, Send, FileText, X, Globe } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
@@ -10,18 +10,16 @@ import { TerminalMeta } from '../api'
 import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
 
-const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex']
+const FALLBACK_PROVIDERS = ['claude_code', 'opencode', 'codex', 'copilot_cli']
 
 const SOURCE_LABELS: Record<string, string> = {
   'built-in': 'Built-in',
   'local': 'Local',
-  'kiro': 'Kiro',
-  'q_cli': 'Q CLI',
 }
 
 export function AgentPanel() {
   const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus } = useStore()
-  const [provider, setProvider] = useState('kiro_cli')
+  const [provider, setProvider] = useState('claude_code')
   const [profile, setProfile] = useState('')
   const [creating, setCreating] = useState(false)
   const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null } | null>(null)
@@ -46,7 +44,7 @@ export function AgentPanel() {
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [terminalWorkDirs, setTerminalWorkDirs] = useState<Record<string, string | null>>({})
   const [showAddAgent, setShowAddAgent] = useState(false)
-  const [addProvider, setAddProvider] = useState('kiro_cli')
+  const [addProvider, setAddProvider] = useState('claude_code')
   const [addProfile, setAddProfile] = useState('')
   const [addWorkDir, setAddWorkDir] = useState('')
   const [addingAgent, setAddingAgent] = useState(false)
@@ -341,14 +339,20 @@ export function AgentPanel() {
           )}
 
           <div className="space-y-2">
-            {activeSessionDetail.terminals.map(t => (
-              <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-2">
+            {activeSessionDetail.terminals.map(t => {
+              const isRemote = t.provider === 'remote'
+              return (
+              <div key={t.id} className={`bg-gray-900/50 border rounded-lg p-3 space-y-2 ${isRemote ? 'border-indigo-500/40' : 'border-gray-700/30'}`}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <TermIcon size={14} className="text-gray-400" />
+                    {isRemote
+                      ? <Globe size={14} className="text-indigo-400" />
+                      : <TermIcon size={14} className="text-gray-400" />}
                     <span className="text-sm font-mono text-gray-300">{t.id}</span>
                     <StatusBadge status={terminalStatuses[t.id] || null} />
-                    <span className="text-xs text-gray-500">{t.provider}</span>
+                    {isRemote
+                      ? <span className="text-xs text-indigo-300 bg-indigo-900/40 px-2 py-0.5 rounded font-medium">Remote</span>
+                      : <span className="text-xs text-gray-500">{t.provider}</span>}
                     {t.agent_profile && <span className="text-xs text-emerald-400">{t.agent_profile}</span>}
                   </div>
                   <div className="flex items-center gap-2">
@@ -360,39 +364,52 @@ export function AgentPanel() {
                       <Mail size={14} />
                       Inbox
                     </button>
-                    <button
-                      onClick={() => openTerminal(t.id, t.provider, t.agent_profile)}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-colors"
-                      title="Open live terminal"
-                    >
-                      <Monitor size={14} />
-                      Open Terminal
-                    </button>
-                    <button
-                      onClick={() => setOutputTerminalId(t.id)}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium rounded-lg transition-colors"
-                      title="View output"
-                    >
-                      <FileText size={14} />
-                      Output
-                    </button>
-                    <button
-                      onClick={() => setPendingExit(t as TerminalMeta)}
-                      disabled={exitingTerminal === t.id}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
-                      title="Graceful exit"
-                    >
-                      <LogOut size={14} />
-                      {exitingTerminal === t.id ? 'Exiting...' : 'Graceful Exit'}
-                    </button>
+                    {isRemote ? (
+                      <button
+                        onClick={() => setOutputTerminalId(t.id)}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
+                        title="View remote agent output"
+                      >
+                        <FileText size={14} />
+                        View Output
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => openTerminal(t.id, t.provider, t.agent_profile)}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-colors"
+                          title="Open live terminal"
+                        >
+                          <Monitor size={14} />
+                          Open Terminal
+                        </button>
+                        <button
+                          onClick={() => setOutputTerminalId(t.id)}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium rounded-lg transition-colors"
+                          title="View output"
+                        >
+                          <FileText size={14} />
+                          Output
+                        </button>
+                        <button
+                          onClick={() => setPendingExit(t as TerminalMeta)}
+                          disabled={exitingTerminal === t.id}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
+                          title="Graceful exit"
+                        >
+                          <LogOut size={14} />
+                          {exitingTerminal === t.id ? 'Exiting...' : 'Graceful Exit'}
+                        </button>
+                      </>
+                    )}
                     <button
                       onClick={() => setPendingClose(t as TerminalMeta)}
                       disabled={closingTerminal === t.id}
                       className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
-                      title="Close terminal"
+                      title={isRemote ? 'Disconnect remote agent' : 'Close terminal'}
                     >
                       <Trash2 size={14} />
-                      {closingTerminal === t.id ? 'Closing...' : 'Close'}
+                      {closingTerminal === t.id ? 'Closing...' : isRemote ? 'Disconnect' : 'Close'}
                     </button>
                   </div>
                 </div>
@@ -433,7 +450,7 @@ export function AgentPanel() {
                   </div>
                 )}
               </div>
-            ))}
+            )})}
           </div>
         </div>
       )}

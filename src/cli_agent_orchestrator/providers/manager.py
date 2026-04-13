@@ -10,13 +10,8 @@ from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
 from cli_agent_orchestrator.providers.clother_minimax_cn import ClotherMinimaxCnProvider
 from cli_agent_orchestrator.providers.codex import CodexProvider
 from cli_agent_orchestrator.providers.copilot_cli import CopilotCliProvider
-from cli_agent_orchestrator.providers.gemini_cli import GeminiCliProvider
-from cli_agent_orchestrator.providers.kimi_cli import KimiCliProvider
-from cli_agent_orchestrator.providers.huntdex import HuntdexProvider
-from cli_agent_orchestrator.providers.kiro_cli import KiroCliProvider
 from cli_agent_orchestrator.providers.opencode import OpenCodeProvider
-from cli_agent_orchestrator.providers.q_cli import QCliProvider
-from cli_agent_orchestrator.providers.script import ScriptProvider
+from cli_agent_orchestrator.providers.remote import RemoteProvider
 
 logger = logging.getLogger(__name__)
 
@@ -48,46 +43,18 @@ class ProviderManager:
         """
         try:
             provider: BaseProvider
-            if provider_type == ProviderType.Q_CLI.value:
-                if not agent_profile:
-                    raise ValueError("Q CLI provider requires agent_profile parameter")
-                provider = QCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
-            elif provider_type == ProviderType.KIRO_CLI.value:
-                if not agent_profile:
-                    raise ValueError("Kiro CLI provider requires agent_profile parameter")
-                provider = KiroCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
-            elif provider_type == ProviderType.CLAUDE_CODE.value:
+            if provider_type == ProviderType.CLAUDE_CODE.value:
                 provider = ClaudeCodeProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.CODEX.value:
                 provider = CodexProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.COPILOT_CLI.value:
                 provider = CopilotCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
-            elif provider_type == ProviderType.GEMINI_CLI.value:
-                provider = GeminiCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
-            elif provider_type == ProviderType.KIMI_CLI.value:
-                provider = KimiCliProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.OPENCODE.value:
                 provider = OpenCodeProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.CLOTHER_MINIMAX_CN.value:
                 provider = ClotherMinimaxCnProvider(terminal_id, tmux_session, tmux_window, agent_profile)
-            elif provider_type == ProviderType.SCRIPT.value:
-                # Script provider: read script_path from the agent profile
-                from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile as _load_profile
-                profile = _load_profile(agent_profile) if agent_profile else None
-                if not profile or not profile.script_path:
-                    raise ValueError(
-                        "ScriptProvider requires script_path in the agent profile frontmatter. "
-                        "Add 'script_path: /path/to/script' to the profile's YAML header."
-                    )
-                provider = ScriptProvider(
-                    terminal_id, tmux_session, tmux_window,
-                    script_path=profile.script_path,
-                    script_args=profile.script_args or [],
-                    env_vars=profile.env_vars,
-                    agent_profile=agent_profile,
-                )
-            elif provider_type == ProviderType.HUNTDEX.value:
-                provider = HuntdexProvider(terminal_id, tmux_session, tmux_window, agent_profile)
+            elif provider_type == ProviderType.REMOTE.value:
+                provider = RemoteProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             else:
                 raise ValueError(f"Unknown provider type: {provider_type}")
 
@@ -136,30 +103,6 @@ class ProviderManager:
             metadata["agent_profile"],
         )
         logger.info(f"Created provider on-demand for terminal {terminal_id}")
-        return provider
-
-    def create_script_provider(
-        self,
-        terminal_id: str,
-        tmux_session: str,
-        tmux_window: str,
-        script_path: str,
-        script_args: Optional[list] = None,
-        env_vars: Optional[Dict[str, str]] = None,
-    ) -> "ScriptProvider":
-        """Convenience factory for ScriptProvider with script-specific parameters.
-
-        Unlike ``create_provider`` (which takes a generic ``agent_profile`` string),
-        this method directly accepts *script_path* and *script_args*.
-        """
-        provider = ScriptProvider(
-            terminal_id, tmux_session, tmux_window,
-            script_path=script_path,
-            script_args=script_args or [],
-            env_vars=env_vars,
-        )
-        self._providers[terminal_id] = provider
-        logger.info(f"Created script provider for terminal: {terminal_id}")
         return provider
 
     def cleanup_provider(self, terminal_id: str) -> None:

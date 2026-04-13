@@ -67,35 +67,38 @@ def create_terminal(
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
-    This function orchestrates the complete terminal creation workflow:
-    1. Generate unique terminal ID and window name
-    2. Create tmux session/window (new or existing)
-    3. Save terminal metadata to database
-    4. Initialize the CLI provider (starts the agent)
-    5. Optionally send system prompt as first message
-    6. Set up terminal logging via tmux pipe-pane
-
-    Args:
-        provider: Provider type string (e.g., "kiro_cli", "claude_code")
-        agent_profile: Name of the agent profile to use
-        session_name: Optional custom session name. If not provided, auto-generated.
-        new_session: If True, creates a new tmux session. If False, adds to existing.
-        working_directory: Optional working directory for the terminal shell
-        display_name: Optional display name for the tmux window
-        send_system_prompt: If True, send agent profile's system_prompt as the first
-            message after provider init.  Set to False when the caller will inject
-            the prompt itself (e.g., MCP handoff/assign already prepend it).
-
-    Returns:
-        Terminal object with all metadata populated
-
-    Raises:
-        ValueError: If session already exists (new_session=True) or not found (new_session=False)
-        TimeoutError: If provider initialization times out
+    For remote providers, no tmux session is created — all I/O goes through
+    the DB-backed RemoteProvider.  For local providers, the full tmux
+    workflow is used.
     """
     try:
-        # Step 1: Generate unique identifiers
         terminal_id = generate_terminal_id()
+
+        if not session_name:
+            session_name = generate_session_name()
+
+        # --- Remote provider: skip tmux entirely ---
+        if provider == ProviderType.REMOTE.value:
+            window_name = generate_window_name(agent_profile, display_name=display_name)
+            db_create_terminal(terminal_id, session_name, window_name, provider, agent_profile)
+            provider_instance = provider_manager.create_provider(
+                provider, terminal_id, session_name, window_name, agent_profile
+            )
+            provider_instance.initialize()
+
+            terminal = Terminal(
+                id=terminal_id,
+                name=window_name,
+                provider=ProviderType(provider),
+                session_name=session_name,
+                agent_profile=agent_profile,
+                status=TerminalStatus.IDLE,
+                last_active=datetime.now(),
+            )
+            logger.info(f"Created remote terminal: {terminal_id}")
+            return terminal
+
+        # --- Local provider: full tmux workflow ---
 
         if not session_name:
             session_name = generate_session_name()
@@ -270,30 +273,28 @@ def get_working_directory(terminal_id: str) -> Optional[str]:
 
 
 def send_input(terminal_id: str, message: str) -> bool:
-    """Send input to terminal via tmux paste buffer.
-
-    Uses bracketed paste mode (-p) to bypass TUI hotkey handling. The number
-    of Enter keys sent after pasting is determined by the provider's
-    ``paste_enter_count`` property (e.g., some TUIs need 2 Enters because
-    bracketed paste triggers multi-line mode).
-    """
+    """Send input to terminal — remote providers use DB queue, local use tmux."""
     try:
         metadata = get_terminal_metadata(terminal_id)
         if not metadata:
             raise ValueError(f"Terminal '{terminal_id}' not found")
 
-        # Check how many Enter keys the provider needs after paste
         provider = provider_manager.get_provider(terminal_id)
-        enter_count = provider.paste_enter_count if provider else 1
 
+        # Remote provider: write to DB queue
+        if metadata["provider"] == ProviderType.REMOTE.value:
+            from cli_agent_orchestrator.providers.remote import RemoteProvider
+            if isinstance(provider, RemoteProvider):
+                provider.set_pending_input(message)
+                update_last_active(terminal_id)
+                logger.info(f"Queued input for remote terminal: {terminal_id}")
+                return True
+
+        # Local provider: tmux
+        enter_count = provider.paste_enter_count if provider else 1
         tmux_client.send_keys(
             metadata["tmux_session"], metadata["tmux_window"], message, enter_count=enter_count
         )
-
-        # Notify the provider that external input was received.
-        # This allows providers to adjust status
-        # detection — specifically to stop reporting IDLE for the post-init
-        # state and resume normal COMPLETED detection after a real task.
         if provider:
             provider.mark_input_received()
 
@@ -339,18 +340,23 @@ def send_special_key(terminal_id: str, key: str) -> bool:
 
 
 def get_output(terminal_id: str, mode: OutputMode = OutputMode.FULL) -> str:
-    """Get terminal output.
-
-    For ``LAST`` mode, if the provider declares ``extraction_retries > 0``,
-    retries extraction with 10 s delays between attempts.  This handles
-    TUI-based providers (e.g. Gemini CLI's Ink renderer) whose notification
-    spinners can temporarily obscure response text in the tmux capture buffer.
-    """
+    """Get terminal output — remote providers return from memory, local use tmux."""
     try:
         metadata = get_terminal_metadata(terminal_id)
         if not metadata:
             raise ValueError(f"Terminal '{terminal_id}' not found")
 
+        # Remote provider: return from memory
+        if metadata["provider"] == ProviderType.REMOTE.value:
+            from cli_agent_orchestrator.providers.remote import RemoteProvider
+            provider = provider_manager.get_provider(terminal_id)
+            if isinstance(provider, RemoteProvider):
+                if mode == OutputMode.FULL:
+                    return provider.get_full_output()
+                return provider._last_output
+            raise ValueError(f"Provider mismatch for remote terminal {terminal_id}")
+
+        # Local provider: tmux
         full_output = tmux_client.get_history(metadata["tmux_session"], metadata["tmux_window"])
 
         if mode == OutputMode.FULL:
@@ -387,25 +393,21 @@ def get_output(terminal_id: str, mode: OutputMode = OutputMode.FULL) -> str:
 
 
 def delete_terminal(terminal_id: str) -> bool:
-    """Delete terminal and kill its tmux window."""
+    """Delete terminal — remote terminals skip tmux cleanup."""
     try:
-        # Get metadata before deletion
         metadata = get_terminal_metadata(terminal_id)
 
-        if metadata:
-            # Stop pipe-pane logging
+        if metadata and metadata["provider"] != ProviderType.REMOTE.value:
+            # Local terminal: stop logging and kill tmux window
             try:
                 tmux_client.stop_pipe_pane(metadata["tmux_session"], metadata["tmux_window"])
             except Exception as e:
                 logger.warning(f"Failed to stop pipe-pane for {terminal_id}: {e}")
-
-            # Kill the tmux window (this terminates the agent process)
             try:
                 tmux_client.kill_window(metadata["tmux_session"], metadata["tmux_window"])
             except Exception as e:
                 logger.warning(f"Failed to kill tmux window for {terminal_id}: {e}")
 
-        # Cleanup provider state and database record
         provider_manager.cleanup_provider(terminal_id)
         deleted = db_delete_terminal(terminal_id)
         logger.info(f"Deleted terminal: {terminal_id}")

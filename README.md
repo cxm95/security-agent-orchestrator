@@ -8,6 +8,7 @@ CLI Agent Orchestrator(CAO, pronounced as "kay-oh"), is a lightweight orchestrat
 
 ### New Features
 
+- **Remote Agent Support** — New `RemoteProvider` enables CAO to orchestrate remote AI agents (OpenCode, Claude Code, Codex, etc.) running on separate machines. Remote agents connect via HTTP bridge — no tmux required on the Hub side. Three bridge variants provided: **MCP server** (`cao_bridge_mcp.py`), **Skill** (`SKILL.md`), and **OpenCode Plugin** (`cao-bridge.ts`). See [Remote Agents](#remote-agents) for details.
 - **OpenCode Provider** — Full provider for the [OpenCode](https://github.com/opencode-ai/opencode) TUI AI coding agent, including lifecycle management, alternate-screen buffer parsing for status detection, response extraction, session persistence (`ses_xxx` resumption), auto-approve mode, and model selection. See [Provider Features](#provider-features) for details.
 - **Script Provider** — Lightweight provider for running arbitrary shell scripts/commands in tmux sessions. Detects completion via shell prompt, strips invocation lines, supports custom environment variables and Ctrl-C interruption. See [Provider Features → Script Provider](#script-provider).
 - **Huntdex Provider** — Provider for delegating tasks to a Huntdex API server via `copilot-ui.py` REPL with status detection and output extraction.
@@ -621,6 +622,55 @@ mcpServers:
     env:
       CAO_SESSION_ROOT: "/tmp/my-sessions"
 ```
+
+## Remote Agents
+
+CAO can orchestrate **remote** AI agents running on separate machines. Remote terminals use an in-memory queue instead of tmux — the remote agent polls for tasks and reports results via HTTP.
+
+### Architecture
+
+```
+Hub (CAO Server)                 Remote Machine
+┌──────────────┐    HTTP/REST    ┌──────────────────────┐
+│ RemoteProvider│ ◄────────────► │ Bridge (MCP/Plugin)  │
+│ (in-memory)  │                 │   ↕                  │
+│ API Routes   │                 │ Agent (opencode, etc)│
+└──────────────┘                 └──────────────────────┘
+```
+
+### Hub API Routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/remotes/register` | POST | Register a remote agent, creates a virtual terminal |
+| `/remotes/{id}/poll` | GET | Agent polls for pending input (task/message) |
+| `/remotes/{id}/report` | POST | Agent reports status and/or output |
+| `/remotes/{id}/status` | GET | Query current remote agent status |
+
+### Bridge Variants (in `cao-bridge/`)
+
+1. **MCP Server** (`cao_bridge_mcp.py`) — FastMCP stdio server exposing `cao_register`, `cao_poll`, `cao_report` tools. Add to any MCP-capable agent's config.
+2. **Skill** (`skill/cao-bridge/SKILL.md`) — Instruction file the agent loads to follow the bridge protocol using `curl`.
+3. **OpenCode Plugin** (`plugin/cao-bridge.ts`) — TypeScript plugin with auto-register hook and tools for poll/report.
+
+### Quick Start
+
+```bash
+# On the Hub
+cao launch --provider remote   # not needed; remotes self-register
+
+# On the remote machine (MCP bridge)
+export CAO_HUB_URL=http://<hub-ip>:9889
+export CAO_AGENT_PROFILE=opencode
+python3 cao-bridge/cao_bridge_mcp.py
+
+# Or register manually via curl
+curl -X POST http://<hub-ip>:9889/remotes/register \
+  -H "Content-Type: application/json" \
+  -d '{"agent_profile": "opencode"}'
+```
+
+Existing MCP tools (`handoff`, `assign`, `send_message`) work transparently with remote terminals — `terminal_service` routes to RemoteProvider automatically.
 
 ## Remote MCP Servers (SSE)
 

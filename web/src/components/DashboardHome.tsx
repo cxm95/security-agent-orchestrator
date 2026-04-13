@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { api, TerminalMeta } from '../api'
-import { Bot, Zap, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, ChevronRight, ChevronDown, Users } from 'lucide-react'
+import { Bot, Zap, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, ChevronRight, ChevronDown, Users, Globe } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
@@ -232,15 +232,21 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
               {/* Terminals inside session */}
               {expandedSessions.has(session.name) && (
                 <div className="border-t border-gray-700/30 px-4 pb-4 space-y-2 pt-3">
-                  {session.terminals.map(t => (
-                    <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-2">
+                  {session.terminals.map(t => {
+                    const isRemote = t.provider === 'remote'
+                    return (
+                    <div key={t.id} className={`bg-gray-900/50 border rounded-lg p-3 space-y-2 ${isRemote ? 'border-indigo-500/40' : 'border-gray-700/30'}`}>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3 min-w-0">
-                          <TermIcon size={14} className="text-gray-400 shrink-0" />
+                          {isRemote
+                            ? <Globe size={14} className="text-indigo-400 shrink-0" />
+                            : <TermIcon size={14} className="text-gray-400 shrink-0" />}
                           <span className="text-sm font-medium text-gray-200 truncate">{t.agent_profile || 'default'}</span>
                           <span className="text-xs font-mono text-gray-500">{t.id}</span>
                           <StatusBadge status={terminalStatuses[t.id] || null} />
-                          <span className="text-[10px] text-gray-600">{t.provider}</span>
+                          {isRemote
+                            ? <span className="text-[10px] text-indigo-300 bg-indigo-900/40 px-1.5 py-0.5 rounded font-medium">Remote</span>
+                            : <span className="text-[10px] text-gray-600">{t.provider}</span>}
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <button
@@ -252,31 +258,43 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                           </button>
                           <button
                             onClick={() => setOutputTerminalId(t.id)}
-                            className="p-1.5 text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
+                            className={`p-1.5 hover:text-white rounded-lg transition-colors ${isRemote ? 'text-indigo-400 bg-indigo-900/30 hover:bg-indigo-800/50' : 'text-gray-400 bg-gray-800 hover:bg-gray-700'}`}
                             title="Output"
                           >
                             <FileText size={14} />
                           </button>
-                          <button
-                            onClick={() => setLiveTerminal({ id: t.id, provider: t.provider, agentProfile: t.agent_profile })}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-colors"
-                          >
-                            <Monitor size={12} />
-                            Terminal
-                          </button>
-                          <button
-                            onClick={() => setPendingExit(t)}
-                            disabled={exitingTerminal === t.id}
-                            className="p-1.5 text-gray-400 hover:text-amber-400 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
-                            title="Graceful Exit"
-                          >
-                            <LogOut size={14} />
-                          </button>
+                          {isRemote ? (
+                            <button
+                              onClick={() => setOutputTerminalId(t.id)}
+                              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
+                            >
+                              <FileText size={12} />
+                              Output
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => setLiveTerminal({ id: t.id, provider: t.provider, agentProfile: t.agent_profile })}
+                                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-colors"
+                              >
+                                <Monitor size={12} />
+                                Terminal
+                              </button>
+                              <button
+                                onClick={() => setPendingExit(t)}
+                                disabled={exitingTerminal === t.id}
+                                className="p-1.5 text-gray-400 hover:text-amber-400 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
+                                title="Graceful Exit"
+                              >
+                                <LogOut size={14} />
+                              </button>
+                            </>
+                          )}
                           <button
                             onClick={() => setPendingClose(t)}
                             disabled={closingTerminal === t.id}
                             className="p-1.5 text-gray-400 hover:text-red-400 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
-                            title="Close"
+                            title={isRemote ? 'Disconnect' : 'Close'}
                           >
                             <Trash2 size={14} />
                           </button>
@@ -311,7 +329,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                         </div>
                       )}
                     </div>
-                  ))}
+                  )})}
                 </div>
               )}
             </div>

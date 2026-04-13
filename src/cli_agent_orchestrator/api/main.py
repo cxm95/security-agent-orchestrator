@@ -97,7 +97,7 @@ class CreateFlowRequest(BaseModel):
     name: str
     schedule: str
     agent_profile: str
-    provider: str = "kiro_cli"
+    provider: str = "claude_code"
     prompt_template: str
 
     @field_validator("name")
@@ -194,16 +194,11 @@ async def list_providers_endpoint() -> List[Dict]:
     import shutil
 
     provider_binaries = {
-        "kiro_cli": "kiro-cli",
         "claude_code": "claude",
-        "q_cli": "q",
         "codex": "codex",
         "copilot_cli": "copilot",
-        "gemini_cli": "gemini",
-        "kimi_cli": "kimi",
         "opencode": "opencode",
-        # "script" is intentionally omitted: it runs user-provided scripts,
-        # not a fixed binary.
+        "clother_minimax_cn": "clother-minimax-cn",
     }
     result = []
     for provider, binary in provider_binaries.items():
@@ -566,6 +561,122 @@ async def get_inbox_messages_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve inbox messages: {str(e)}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Remote agent endpoints
+# ---------------------------------------------------------------------------
+
+
+class RemoteRegisterRequest(BaseModel):
+    agent_profile: str = Field(default="remote-agent")
+    session_name: Optional[str] = None
+
+
+class RemoteReportRequest(BaseModel):
+    status: Optional[str] = None
+    output: Optional[str] = None
+    append: bool = False
+
+
+@app.post("/remotes/register", status_code=status.HTTP_201_CREATED)
+async def remote_register(body: RemoteRegisterRequest) -> Dict:
+    """Register a remote agent — creates a virtual terminal (no tmux)."""
+    try:
+        terminal = terminal_service.create_terminal(
+            provider="remote",
+            agent_profile=body.agent_profile,
+            session_name=body.session_name,
+            new_session=False if body.session_name else True,
+            send_system_prompt=False,
+        )
+        return {"terminal_id": terminal.id, "session_name": terminal.session_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/remotes/{terminal_id}/poll")
+async def remote_poll(terminal_id: str) -> Dict:
+    """Remote agent polls for pending input."""
+    try:
+        provider = provider_manager.get_provider(terminal_id)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Terminal not found")
+
+        from cli_agent_orchestrator.providers.remote import RemoteProvider
+        if not isinstance(provider, RemoteProvider):
+            raise HTTPException(status_code=400, detail="Not a remote terminal")
+
+        # Bridge inbox → remote: deliver pending send_message() before consuming
+        if provider._pending_input is None:
+            try:
+                inbox_service.check_and_send_pending_messages(terminal_id)
+            except Exception as e:
+                logger.warning(f"Inbox check for remote {terminal_id}: {e}")
+
+        msg = provider.consume_pending_input()
+        return {"has_input": msg is not None, "input": msg}
+
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Terminal not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/remotes/{terminal_id}/report")
+async def remote_report(terminal_id: str, body: RemoteReportRequest) -> Dict:
+    """Remote agent reports status and/or output."""
+    try:
+        provider = provider_manager.get_provider(terminal_id)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Terminal not found")
+
+        from cli_agent_orchestrator.providers.remote import RemoteProvider
+        if not isinstance(provider, RemoteProvider):
+            raise HTTPException(status_code=400, detail="Not a remote terminal")
+
+        if body.status:
+            provider.report_status(body.status)
+        if body.output is not None:
+            provider.report_output(body.output, append=body.append)
+
+        return {"ok": True}
+
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Terminal not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/remotes/{terminal_id}/status")
+async def remote_status(terminal_id: str) -> Dict:
+    """Get remote terminal status (for debugging / monitoring)."""
+    try:
+        provider = provider_manager.get_provider(terminal_id)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Terminal not found")
+
+        from cli_agent_orchestrator.providers.remote import RemoteProvider
+        if not isinstance(provider, RemoteProvider):
+            raise HTTPException(status_code=400, detail="Not a remote terminal")
+
+        return {
+            "terminal_id": terminal_id,
+            "status": provider.get_status().value,
+            "has_pending_input": provider._pending_input is not None,
+            "last_output_length": len(provider._last_output),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Terminal not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.websocket("/terminals/{terminal_id}/ws")

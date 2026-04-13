@@ -13,9 +13,6 @@ PROVIDERS_REQUIRING_WORKSPACE_ACCESS = {
     "claude_code",
     "codex",
     "copilot_cli",
-    "gemini_cli",
-    "kimi_cli",
-    "kiro_cli",
     "opencode",
 }
 

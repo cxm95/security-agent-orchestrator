@@ -26,8 +26,7 @@ SESSION_PREFIX = "cao-"
 PROVIDERS = [p.value for p in ProviderType]
 
 # Default provider used when --provider flag is not specified
-# Kiro CLI is the recommended provider for new projects
-DEFAULT_PROVIDER = ProviderType.KIRO_CLI.value
+DEFAULT_PROVIDER = ProviderType.CLAUDE_CODE.value
 
 # =============================================================================
 # Tmux Configuration
