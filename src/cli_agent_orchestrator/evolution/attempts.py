@@ -1,6 +1,6 @@
 """Attempt CRUD and leaderboard (ported from coral/hub/attempts.py).
 
-Storage: .cao-evolution/shared/tasks/{task_id}/attempts/{run_id}.json
+Storage: .cao-evolution/attempts/{task_id}/{run_id}.json
 Added: task_id partitioning, compare_to_history() for status determination.
 """
 
@@ -14,7 +14,7 @@ from cli_agent_orchestrator.evolution.types import Attempt
 
 
 def _attempts_dir(evolution_dir: str | Path, task_id: str) -> Path:
-    d = Path(evolution_dir) / "shared" / "tasks" / task_id / "attempts"
+    d = Path(evolution_dir) / "attempts" / task_id
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -70,7 +70,7 @@ def get_leaderboard(
     """Top N attempts for a task, sorted by score descending."""
     attempts = read_attempts(evolution_dir, task_id)
     scored = [a for a in attempts if a.score is not None]
-    scored.sort(key=lambda a: a.score or 0.0, reverse=True)
+    scored.sort(key=lambda a: a.score, reverse=True)  # type: ignore[arg-type]
     return scored[:top_n]
 
 

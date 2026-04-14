@@ -120,9 +120,12 @@ class TestCheckpoint:
         sd = init_checkpoint_repo(str(self.evo_dir))
         assert (sd / ".git").is_dir()
         assert (sd / "tasks").is_dir()
-        assert (sd / "knowledge" / "notes").is_dir()
-        assert (sd / "knowledge" / "skills").is_dir()
-        assert (sd / "knowledge" / "notes" / "_synthesis").is_dir()
+        assert (sd / "notes").is_dir()
+        assert (sd / "skills").is_dir()
+        assert (sd / "notes" / "_synthesis").is_dir()
+        assert (sd / "graders").is_dir()
+        assert (sd / "reports").is_dir()
+        assert (sd / "attempts").is_dir()
 
     def test_init_idempotent(self):
         sd1 = init_checkpoint_repo(str(self.evo_dir))
@@ -392,3 +395,46 @@ class TestGitRemoteSync:
             _sync_remote(sd)
         finally:
             cp_mod._REMOTE_URL = original
+
+
+# ── RepoManager ──────────────────────────────────────────────────────────
+
+
+class TestRepoManager:
+    def test_get_dir_returns_correct_paths(self, tmp_path):
+        from cli_agent_orchestrator.evolution.repo_manager import RepoManager
+        rm = RepoManager(tmp_path)
+        assert rm.get_dir("skills") == tmp_path / "skills"
+        assert rm.get_dir("notes") == tmp_path / "notes"
+        assert rm.get_dir("attempts") == tmp_path / "attempts"
+        assert rm.get_dir("graders") == tmp_path / "graders"
+        assert rm.get_dir("tasks") == tmp_path / "tasks"
+        assert rm.get_dir("reports") == tmp_path / "reports"
+
+    def test_get_dir_raises_on_unknown_type(self, tmp_path):
+        from cli_agent_orchestrator.evolution.repo_manager import RepoManager
+        rm = RepoManager(tmp_path)
+        with pytest.raises(ValueError, match="Unknown content type"):
+            rm.get_dir("bogus")
+
+    def test_ensure_dirs_creates_all_directories(self, tmp_path):
+        from cli_agent_orchestrator.evolution.repo_manager import RepoManager, CONTENT_TYPES
+        rm = RepoManager(tmp_path / "new")
+        rm.ensure_dirs()
+        for ct in CONTENT_TYPES:
+            assert (tmp_path / "new" / ct).is_dir()
+        assert (tmp_path / "new" / "notes" / "_synthesis").is_dir()
+
+    def test_git_root_single_mode(self, tmp_path):
+        from cli_agent_orchestrator.evolution.repo_manager import RepoManager
+        rm = RepoManager(tmp_path, mode="single")
+        assert rm.git_root() == tmp_path
+        assert rm.git_root("skills") == tmp_path
+        assert rm.git_root("notes") == tmp_path
+
+    def test_git_root_multi_mode(self, tmp_path):
+        from cli_agent_orchestrator.evolution.repo_manager import RepoManager
+        rm = RepoManager(tmp_path, mode="multi")
+        assert rm.git_root("skills") == tmp_path / "skills"
+        assert rm.git_root("notes") == tmp_path / "notes"
+        assert rm.git_root("tasks") == tmp_path  # tasks stay in root

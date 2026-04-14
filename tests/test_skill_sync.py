@@ -38,7 +38,7 @@ def _make_skill(base: Path, name: str, content: str = "default") -> Path:
 @pytest.fixture
 def evo_dir(tmp_path):
     """Set up a minimal evolution directory structure."""
-    sd = tmp_path / "shared" / "knowledge" / "skills"
+    sd = tmp_path / "skills"
     sd.mkdir(parents=True)
     return tmp_path
 
@@ -90,7 +90,7 @@ class TestPushSkills:
         _make_skill(local, "scan-tool", "scan logic")
         result = push_skills(evo_dir, {"opencode": local})
         assert "opencode:scan-tool" in result.pushed
-        pool_md = evo_dir / "shared" / "knowledge" / "skills" / "scan-tool" / "SKILL.md"
+        pool_md = evo_dir / "skills" / "scan-tool" / "SKILL.md"
         assert pool_md.exists()
         assert "scan logic" in pool_md.read_text()
 
@@ -110,7 +110,7 @@ class TestPushSkills:
         (local / "y" / "SKILL.md").write_text("v2 content")
         result = push_skills(evo_dir, {"opencode": local})
         assert "opencode:y" in result.pushed
-        pool_md = evo_dir / "shared" / "knowledge" / "skills" / "y" / "SKILL.md"
+        pool_md = evo_dir / "skills" / "y" / "SKILL.md"
         assert "v2 content" in pool_md.read_text()
 
     def test_push_from_multiple_sources(self, evo_dir, tmp_path):
@@ -120,8 +120,8 @@ class TestPushSkills:
         _make_skill(src2, "skill-b")
         result = push_skills(evo_dir, {"opencode": src1, "claude-code": src2})
         assert len(result.pushed) == 2
-        assert (evo_dir / "shared" / "knowledge" / "skills" / "skill-a" / "SKILL.md").exists()
-        assert (evo_dir / "shared" / "knowledge" / "skills" / "skill-b" / "SKILL.md").exists()
+        assert (evo_dir / "skills" / "skill-a" / "SKILL.md").exists()
+        assert (evo_dir / "skills" / "skill-b" / "SKILL.md").exists()
 
 
 # ── pull_skills ──────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ class TestPullSkills:
         assert result.pulled == []
 
     def test_pull_to_explicit_target(self, evo_dir, tmp_path):
-        _make_skill(evo_dir / "shared" / "knowledge" / "skills", "pool-skill", "shared content")
+        _make_skill(evo_dir / "skills", "pool-skill", "shared content")
         target = tmp_path / "target"
         target.mkdir()
         result = pull_skills(evo_dir, target_dir=target)
@@ -143,7 +143,7 @@ class TestPullSkills:
         assert "shared content" in (target / "pool-skill" / "SKILL.md").read_text()
 
     def test_pull_skips_unchanged(self, evo_dir, tmp_path):
-        pool = evo_dir / "shared" / "knowledge" / "skills"
+        pool = evo_dir / "skills"
         _make_skill(pool, "z", "content")
         target = tmp_path / "target"
         target.mkdir()
@@ -153,7 +153,7 @@ class TestPullSkills:
         assert result.pulled == []
 
     def test_pull_backups_on_conflict(self, evo_dir, tmp_path):
-        pool = evo_dir / "shared" / "knowledge" / "skills"
+        pool = evo_dir / "skills"
         _make_skill(pool, "conflict-skill", "pool version")
         target = tmp_path / "target"
         _make_skill(target, "conflict-skill", "local version")
@@ -169,7 +169,7 @@ class TestPullSkills:
         assert "pool version" in (target / "conflict-skill" / "SKILL.md").read_text()
 
     def test_pull_no_backup_flag(self, evo_dir, tmp_path):
-        pool = evo_dir / "shared" / "knowledge" / "skills"
+        pool = evo_dir / "skills"
         _make_skill(pool, "nb", "new")
         target = tmp_path / "target"
         _make_skill(target, "nb", "old")
@@ -180,7 +180,7 @@ class TestPullSkills:
         assert not (target / "nb" / "SKILL.md.bak").exists()
 
     def test_pull_via_env_writeback(self, evo_dir, tmp_path, monkeypatch):
-        pool = evo_dir / "shared" / "knowledge" / "skills"
+        pool = evo_dir / "skills"
         _make_skill(pool, "env-skill", "from pool")
         target = tmp_path / "claude" / "skills"
         target.mkdir(parents=True)
@@ -252,7 +252,7 @@ class TestSyncAll:
             assert "opencode:my-skill" in result.pushed
             assert "my-skill" in result.pulled
             # Pool has it
-            assert (evo_dir / "shared" / "knowledge" / "skills" / "my-skill" / "SKILL.md").exists()
+            assert (evo_dir / "skills" / "my-skill" / "SKILL.md").exists()
             # Target has it
             assert (local_tgt / "my-skill" / "SKILL.md").exists()
             assert "my logic" in (local_tgt / "my-skill" / "SKILL.md").read_text()

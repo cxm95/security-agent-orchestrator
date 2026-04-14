@@ -111,7 +111,7 @@ def push_skills(
 ) -> SyncResult:
     """Push local skills into the shared pool. Only copies new/changed skills."""
     result = SyncResult()
-    pool = shared_dir(evolution_dir) / "knowledge" / "skills"
+    pool = shared_dir(evolution_dir) / "skills"
     pool.mkdir(parents=True, exist_ok=True)
 
     if source_dirs is None:
@@ -155,7 +155,7 @@ def pull_skills(
             result.errors.append("No writable target directory found")
             return result
 
-    pool = shared_dir(evolution_dir) / "knowledge" / "skills"
+    pool = shared_dir(evolution_dir) / "skills"
     if not pool.exists():
         return result
 

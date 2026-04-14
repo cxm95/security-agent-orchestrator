@@ -1,7 +1,8 @@
 """Evolution MCP tools — appended to the CAO MCP server.
 
 Provides: cao_report_score, cao_get_leaderboard, cao_search_knowledge,
-cao_share_note, cao_share_skill, cao_get_shared_notes, cao_get_shared_skills.
+cao_share_note, cao_share_skill, cao_get_shared_notes, cao_get_shared_skills,
+cao_create_task, cao_list_tasks, cao_submit_report, cao_fetch_feedback, cao_list_reports.
 
 All tools call the Hub HTTP API (same pattern as existing MCP tools).
 """
@@ -247,3 +248,45 @@ def register_evolution_tools(mcp: FastMCP) -> None:
             return {"reports": r.json()}
         except Exception as e:
             return {"error": str(e)}
+
+    # ── Task management tools ────────────────────────────────────────────
+
+    @mcp.tool()
+    def cao_create_task(
+        task_id: str = Field(description="Task identifier (alphanumeric, hyphens, underscores)"),
+        name: str = Field(default="", description="Human-readable task name"),
+        description: str = Field(default="", description="Task description"),
+        grader: str = Field(default="", description="Path ref to graders/, e.g. 'security/sql-grader.py'"),
+        tips: str = Field(default="", description="Comma-separated tips for agents"),
+        force: bool = Field(default=False, description="Overwrite existing task (agent-side wins)"),
+    ) -> Dict[str, Any]:
+        """Create or update a task on the Hub. Remote agents can register tasks.
+
+        Use force=true to update an existing task (agent-side takes precedence).
+        """
+        try:
+            tips_list = [t.strip() for t in tips.split(",") if t.strip()] if tips else []
+            r = _http.post(
+                f"{API_BASE_URL}/evolution/tasks",
+                json={
+                    "task_id": task_id, "name": name or task_id,
+                    "description": description, "grader": grader,
+                    "tips": tips_list, "created_by": "mcp-agent",
+                    "force": force,
+                },
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    def cao_list_tasks() -> List[Dict[str, Any]]:
+        """List all available tasks on the Hub."""
+        try:
+            r = _http.get(f"{API_BASE_URL}/evolution/tasks", timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return [{"error": str(e)}]

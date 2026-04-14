@@ -1,6 +1,6 @@
 """Reports storage — CRUD for human-feedback reports.
 
-Reports are stored as JSON files under .cao-evolution/shared/reports/{task_id}/{report_id}.json.
+Reports are stored as JSON files under .cao-evolution/reports/{task_id}/{report_id}.json.
 """
 
 from __future__ import annotations

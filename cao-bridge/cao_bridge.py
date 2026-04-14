@@ -146,3 +146,39 @@ class CaoBridge:
         )
         resp.raise_for_status()
         return resp.json()
+
+    # ── Task management (remote agent can create/update tasks) ────────
+
+    def create_task(self, task_id: str, name: str = "", description: str = "",
+                    grader: str = "", grader_code: str = "",
+                    tips: list | None = None, force: bool = False) -> dict:
+        """Create or update a task on the Hub (agent-side registration)."""
+        resp = requests.post(
+            f"{self.hub_url}/evolution/tasks",
+            json={
+                "task_id": task_id, "name": name or task_id,
+                "description": description, "grader": grader,
+                "grader_code": grader_code, "tips": tips or [],
+                "created_by": self.terminal_id or "remote-agent",
+                "force": force,
+            },
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_task(self, task_id: str) -> dict | None:
+        """Fetch task details from Hub. Returns None if not found."""
+        resp = requests.get(f"{self.hub_url}/evolution/{task_id}",
+                            timeout=self._TIMEOUT)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_tasks(self) -> list:
+        """List all tasks on the Hub."""
+        resp = requests.get(f"{self.hub_url}/evolution/tasks",
+                            timeout=self._TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()

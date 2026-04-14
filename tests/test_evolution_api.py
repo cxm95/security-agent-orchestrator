@@ -413,3 +413,72 @@ class TestHeartbeatPrompts:
         for p in prompts:
             # Default prompts reference agent_id
             assert "agent_id" not in p["prompt"] or "{agent_id}" not in p["prompt"]
+
+
+# ── Task upsert + enhanced fields ────────────────────────────────────────
+
+
+class TestTaskUpsert:
+    def test_create_with_enhanced_fields(self, client):
+        r = client.post("/evolution/tasks", json={
+            "task_id": "enhanced-1",
+            "name": "Enhanced Task",
+            "description": "A test task",
+            "grader": "security/sql-grader.py",
+            "tips": ["Use parameterised queries", "Check auth"],
+            "eval_data_path": "/data/sqli.json",
+            "created_by": "test-agent",
+        })
+        assert r.status_code == 201
+        data = r.json()
+        assert data["task_id"] == "enhanced-1"
+        assert data["created"] is True
+
+    def test_upsert_with_force(self, client):
+        tid = "upsert-task"
+        r1 = client.post("/evolution/tasks", json={"task_id": tid, "name": "v1"})
+        assert r1.status_code == 201
+        # Without force → 409
+        r2 = client.post("/evolution/tasks", json={"task_id": tid, "name": "v2"})
+        assert r2.status_code == 409
+        # With force → 201 (update)
+        r3 = client.post("/evolution/tasks", json={"task_id": tid, "name": "v2", "force": True})
+        assert r3.status_code == 201
+        assert r3.json()["updated"] is True
+
+    def test_task_yaml_contains_enhanced_fields(self, client):
+        """Verify that task.yaml on disk contains all enhanced fields."""
+        import cli_agent_orchestrator.api.evolution_routes as evo_mod
+        from cli_agent_orchestrator.evolution.checkpoint import shared_dir
+        tid = "yaml-fields-test"
+        client.post("/evolution/tasks", json={
+            "task_id": tid,
+            "grader": "general/default.py",
+            "tips": ["tip-a", "tip-b"],
+            "created_by": "mcp-agent",
+        })
+        sd = shared_dir(evo_mod.EVOLUTION_DIR)
+        yaml_text = (sd / "tasks" / tid / "task.yaml").read_text()
+        assert "grader: general/default.py" in yaml_text
+        assert "tip-a" in yaml_text
+        assert "created_by: mcp-agent" in yaml_text
+        assert "last_updated:" in yaml_text
+
+    def test_grader_reference_resolution(self, client):
+        """Grader in graders/ dir should be resolved via task.yaml grader field."""
+        import cli_agent_orchestrator.api.evolution_routes as evo_mod
+        from cli_agent_orchestrator.evolution.checkpoint import shared_dir
+        sd = shared_dir(evo_mod.EVOLUTION_DIR)
+        # Create a grader file in graders/
+        grader_dir = sd / "graders" / "security"
+        grader_dir.mkdir(parents=True, exist_ok=True)
+        (grader_dir / "test-grader.py").write_text("class Grader: pass\n")
+        # Create task referencing it
+        tid = "grader-ref-test"
+        client.post("/evolution/tasks", json={
+            "task_id": tid,
+            "grader": "security/test-grader.py",
+        })
+        r = client.get(f"/evolution/{tid}/grader")
+        assert r.status_code == 200
+        assert "class Grader" in r.json()["grader_code"]

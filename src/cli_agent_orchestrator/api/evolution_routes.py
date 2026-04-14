@@ -61,7 +61,12 @@ class TaskCreate(BaseModel):
     task_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$")
     name: str = ""
     description: str = ""
-    grader_code: str = ""  # grader.py source content
+    grader: str = Field(default="", pattern=r"^([a-zA-Z0-9_\-./]*\.py)?$")  # safe path, must end .py
+    grader_code: str = ""  # inline grader code (legacy, written as grader.py)
+    tips: list[str] = []
+    eval_data_path: str = ""
+    created_by: str = ""
+    force: bool = False  # allow overwrite on update (agent-side wins)
 
 
 class ScoreReport(BaseModel):
@@ -136,18 +141,44 @@ class AnnotateBody(BaseModel):
 async def create_task(body: TaskCreate) -> dict[str, Any]:
     sd = shared_dir(EVOLUTION_DIR)
     task_dir = sd / "tasks" / body.task_id
-    if task_dir.exists() and (task_dir / "task.yaml").exists():
-        raise HTTPException(409, f"Task '{body.task_id}' already exists")
+    exists = task_dir.exists() and (task_dir / "task.yaml").exists()
+    if exists and not body.force:
+        raise HTTPException(409, f"Task '{body.task_id}' already exists (use force=true to update)")
+
+    # On upsert, merge with existing YAML (agent-side fields override, others preserved)
+    existing: dict[str, Any] = {}
+    if exists and body.force:
+        for line in (task_dir / "task.yaml").read_text().splitlines():
+            if ":" in line and not line.startswith(" "):
+                key, val = line.split(":", 1)
+                existing[key.strip()] = val.strip()
 
     task_dir.mkdir(parents=True, exist_ok=True)
-    (task_dir / "task.yaml").write_text(
-        f"name: {body.name or body.task_id}\ndescription: {body.description}\n"
-    )
+    name = body.name or existing.get("name") or body.task_id
+    desc = body.description or existing.get("description", "")
+    grader = body.grader or existing.get("grader", "")
+    created_by = body.created_by or existing.get("created_by", "")
+    eval_data = body.eval_data_path or existing.get("eval_data_path", "")
+
+    yaml_lines = [f"name: {name}", f"description: {desc}"]
+    if grader:
+        yaml_lines.append(f"grader: {grader}")
+    if body.tips:
+        yaml_lines.append("tips:")
+        for tip in body.tips:
+            yaml_lines.append(f"  - \"{tip}\"")
+    if eval_data:
+        yaml_lines.append(f"eval_data_path: {eval_data}")
+    if created_by:
+        yaml_lines.append(f"created_by: {created_by}")
+    yaml_lines.append(f"last_updated: {datetime.now(timezone.utc).isoformat()}")
+    (task_dir / "task.yaml").write_text("\n".join(yaml_lines) + "\n")
     if body.grader_code:
         (task_dir / "grader.py").write_text(body.grader_code)
 
-    checkpoint(EVOLUTION_DIR, "hub", f"create task {body.task_id}")
-    return {"task_id": body.task_id, "created": True}
+    action = "update" if exists else "create"
+    checkpoint(EVOLUTION_DIR, created_by or "hub", f"{action} task {body.task_id}")
+    return {"task_id": body.task_id, "created": not exists, "updated": exists}
 
 
 @router.get("/tasks")
@@ -165,6 +196,7 @@ async def list_tasks() -> list[dict[str, str]]:
 
 @router.get("/{task_id}")
 async def get_task(task_id: str) -> dict[str, Any]:
+    _validate_path_id(task_id, "task_id")
     sd = shared_dir(EVOLUTION_DIR)
     task_dir = sd / "tasks" / task_id
     if not (task_dir / "task.yaml").exists():
@@ -181,17 +213,40 @@ async def get_task(task_id: str) -> dict[str, Any]:
 
 @router.get("/{task_id}/grader")
 async def get_grader(task_id: str) -> dict[str, str]:
+    _validate_path_id(task_id, "task_id")
     sd = shared_dir(EVOLUTION_DIR)
-    grader_path = sd / "tasks" / task_id / "grader.py"
-    if not grader_path.exists():
-        raise HTTPException(404, f"No grader.py for task '{task_id}'")
-    return {"task_id": task_id, "grader_code": grader_path.read_text()}
+    task_dir = sd / "tasks" / task_id
+
+    # Check inline grader.py first (legacy)
+    inline_grader = task_dir / "grader.py"
+    if inline_grader.exists():
+        return {"task_id": task_id, "grader_code": inline_grader.read_text(), "source": "inline"}
+
+    # Check grader reference in task.yaml
+    yaml_path = task_dir / "task.yaml"
+    if yaml_path.exists():
+        yaml_content = yaml_path.read_text()
+        for line in yaml_content.splitlines():
+            if line.startswith("grader:"):
+                ref = line.split(":", 1)[1].strip()
+                if ref:
+                    # Prevent path traversal
+                    graders_root = (sd / "graders").resolve()
+                    ref_path = (sd / "graders" / ref).resolve()
+                    if not ref_path.is_relative_to(graders_root):
+                        raise HTTPException(400, f"Invalid grader reference: {ref}")
+                    if ref_path.exists():
+                        return {"task_id": task_id, "grader_code": ref_path.read_text(), "source": f"graders/{ref}"}
+                    raise HTTPException(404, f"Referenced grader '{ref}' not found in graders/")
+
+    raise HTTPException(404, f"No grader for task '{task_id}'")
 
 
 # ── Score reporting (core) ───────────────────────────────────────────────
 
 @router.post("/{task_id}/scores", response_model=ScoreResponse)
 async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
+    _validate_path_id(task_id, "task_id")
     sd = shared_dir(EVOLUTION_DIR)
     if not (sd / "tasks" / task_id).exists():
         # Auto-create task dir for convenience
@@ -232,7 +287,7 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
 
     # Check heartbeat triggers — count global evals across all tasks
     local_eval_count = len(read_attempts(EVOLUTION_DIR, task_id))
-    tasks_dir = Path(EVOLUTION_DIR) / "shared" / "tasks"
+    tasks_dir = Path(EVOLUTION_DIR) / "tasks"
     global_eval_count = 0
     if tasks_dir.exists():
         for td in tasks_dir.iterdir():
@@ -269,6 +324,7 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
 
 @router.get("/{task_id}/leaderboard")
 async def leaderboard(task_id: str, top_n: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+    _validate_path_id(task_id, "task_id")
     lb = get_leaderboard(EVOLUTION_DIR, task_id, top_n)
     return {
         "task_id": task_id,
@@ -279,6 +335,7 @@ async def leaderboard(task_id: str, top_n: int = Query(20, ge=1, le=100)) -> dic
 
 @router.get("/{task_id}/attempts")
 async def list_attempts(task_id: str) -> list[dict[str, Any]]:
+    _validate_path_id(task_id, "task_id")
     return [a.to_dict() for a in read_attempts(EVOLUTION_DIR, task_id)]
 
 
@@ -287,7 +344,7 @@ async def list_attempts(task_id: str) -> list[dict[str, Any]]:
 @router.post("/knowledge/notes", status_code=201)
 async def create_note(body: NoteCreate) -> dict[str, Any]:
     sd = shared_dir(EVOLUTION_DIR)
-    notes_dir = sd / "knowledge" / "notes"
+    notes_dir = sd / "notes"
     notes_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate filename from title
@@ -325,7 +382,7 @@ async def create_note(body: NoteCreate) -> dict[str, Any]:
 @router.get("/knowledge/notes")
 async def list_notes(tags: str = Query("", description="Comma-separated tags to filter")) -> list[dict[str, Any]]:
     sd = shared_dir(EVOLUTION_DIR)
-    notes_dir = sd / "knowledge" / "notes"
+    notes_dir = sd / "notes"
     if not notes_dir.exists():
         return []
 
@@ -349,7 +406,7 @@ async def list_notes(tags: str = Query("", description="Comma-separated tags to 
 @router.post("/knowledge/skills", status_code=201)
 async def create_skill(body: SkillCreate) -> dict[str, Any]:
     sd = shared_dir(EVOLUTION_DIR)
-    skill_dir = sd / "knowledge" / "skills" / body.name
+    skill_dir = sd / "skills" / body.name
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     path = skill_dir / "SKILL.md"
@@ -372,7 +429,7 @@ async def create_skill(body: SkillCreate) -> dict[str, Any]:
 @router.get("/knowledge/skills")
 async def list_skills() -> list[dict[str, Any]]:
     sd = shared_dir(EVOLUTION_DIR)
-    skills_dir = sd / "knowledge" / "skills"
+    skills_dir = sd / "skills"
     if not skills_dir.exists():
         return []
 
@@ -404,7 +461,7 @@ async def search_knowledge(
     results = []
 
     # Search notes
-    notes_dir = sd / "knowledge" / "notes"
+    notes_dir = sd / "notes"
     if notes_dir.exists():
         for f in notes_dir.rglob("*.md"):
             text = f.read_text()
@@ -423,7 +480,7 @@ async def search_knowledge(
             })
 
     # Search skills
-    skills_dir = sd / "knowledge" / "skills"
+    skills_dir = sd / "skills"
     if skills_dir.exists():
         for f in skills_dir.rglob("SKILL.md"):
             text = f.read_text()

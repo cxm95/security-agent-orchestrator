@@ -1,7 +1,7 @@
 """Checkpoint shared state using a local git repo (ported from coral/hub/checkpoint.py).
 
-Path changed: .coral/public/ → .cao-evolution/shared/
-Structure: tasks/{task_id}/... + knowledge/...
+Path: .cao-evolution/ (flat multi-repo-ready layout)
+Structure: tasks/ + skills/ + notes/ + attempts/ + graders/ + reports/
 
 Remote sync: set CAO_EVOLUTION_REMOTE env var to a git remote URL to enable
 automatic push/pull after each checkpoint.
@@ -22,19 +22,21 @@ _REMOTE_URL = os.environ.get("CAO_EVOLUTION_REMOTE", "")
 
 
 def shared_dir(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> Path:
-    return Path(evolution_dir) / "shared"
+    """Return the root data directory (flat layout, no 'shared/' prefix)."""
+    return Path(evolution_dir)
 
 
 def init_checkpoint_repo(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> Path:
-    """Initialize .cao-evolution/shared/ as a git repo with the expected directory structure.
+    """Initialize .cao-evolution/ as a git repo with the expected directory structure.
 
-    Idempotent — skips if .git already exists. Returns the shared dir path.
+    Flat layout: skills/, notes/, attempts/, graders/, tasks/, reports/ at root.
+    Idempotent — skips if .git already exists. Returns the data dir path.
     """
     sd = shared_dir(evolution_dir)
     sd.mkdir(parents=True, exist_ok=True)
 
-    # Create required sub-directories
-    for sub in ["tasks", "knowledge/notes", "knowledge/skills", "knowledge/notes/_synthesis"]:
+    # Create required sub-directories (flat multi-repo-ready layout)
+    for sub in ["tasks", "skills", "notes", "notes/_synthesis", "attempts", "graders", "reports"]:
         (sd / sub).mkdir(parents=True, exist_ok=True)
 
     if (sd / ".git").exists():
@@ -44,7 +46,7 @@ def init_checkpoint_repo(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> P
         _git(sd, "init")
         _git(sd, "config", "user.name", "cao-evolution")
         _git(sd, "config", "user.email", "cao@local")
-        (sd / ".gitignore").write_text("*.lock\n__pycache__/\n")
+        (sd / ".gitignore").write_text("*.lock\n__pycache__/\nheartbeat/\n")
         _git(sd, "add", "-A")
         _git(sd, "commit", "--allow-empty", "-m", "init: cao-evolution shared state")
         _setup_remote(sd)
