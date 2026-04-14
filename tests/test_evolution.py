@@ -286,6 +286,68 @@ class TestScoreDetail:
         assert loaded[0].score_detail == detail
 
 
+class TestEvolutionSignals:
+    def test_signals_roundtrip(self):
+        signals = {
+            "grader": {"source": "grader.py", "score": 0.75, "dimensions": {"precision": 0.8}},
+            "judge": {"source": "llm-as-judge", "score": 7, "confidence": 0.85},
+        }
+        a = Attempt(
+            run_id="es1", agent_id="a1", task_id="t1",
+            title="sig", score=0.75, status="improved",
+            timestamp="2026-01-01T00:00:00Z",
+            evolution_signals=signals,
+        )
+        d = a.to_dict()
+        assert d["evolution_signals"]["grader"]["score"] == 0.75
+        assert d["evolution_signals"]["judge"]["confidence"] == 0.85
+        a2 = Attempt.from_dict(d)
+        assert a2.evolution_signals == signals
+
+    def test_signals_none_omitted(self):
+        a = Attempt(
+            run_id="es2", agent_id="a1", task_id="t1",
+            title="no sig", score=0.5, status="baseline",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        assert "evolution_signals" not in a.to_dict()
+
+    def test_signals_persisted_on_disk(self, tmp_path):
+        evo_dir = str(tmp_path / ".cao-evo")
+        init_checkpoint_repo(evo_dir)
+        signals = {"custom": {"source": "my-evaluator", "value": 42}}
+        a = Attempt(
+            run_id="es3", agent_id="a1", task_id="t1",
+            title="persist", score=0.8, status="improved",
+            timestamp="2026-01-01T00:00:00Z",
+            evolution_signals=signals,
+        )
+        write_attempt(evo_dir, a)
+        loaded = read_attempts(evo_dir, "t1")
+        assert loaded[0].evolution_signals == signals
+
+    def test_signals_injected_in_prompt(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import render_prompt, HeartbeatAction
+        signals = {"judge": {"score": 8, "confidence": 0.9}}
+        action = HeartbeatAction(
+            name="reflect", every=1,
+            prompt="Signals:\n{evolution_signals_json}\nDone.",
+        )
+        result = render_prompt(action, "agent-1", "task-1", evolution_signals=signals)
+        assert '"judge"' in result
+        assert '"score": 8' in result
+        assert '"confidence": 0.9' in result
+
+    def test_signals_empty_when_none(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import render_prompt, HeartbeatAction
+        action = HeartbeatAction(
+            name="reflect", every=1,
+            prompt="Signals: {evolution_signals_json}",
+        )
+        result = render_prompt(action, "a", "t", evolution_signals=None)
+        assert "{}" in result
+
+
 # ── git remote sync ─────────────────────────────────────────────────────
 
 class TestGitRemoteSync:

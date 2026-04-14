@@ -79,6 +79,7 @@ class Attempt:
     feedback: str = ""
     shared_state_hash: str | None = None
     score_detail: dict[str, float] | None = None  # multi-dimension scores from grader
+    evolution_signals: dict[str, Any] | None = None  # transparent multi-source signal pack
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -95,6 +96,8 @@ class Attempt:
             d["shared_state_hash"] = self.shared_state_hash
         if self.score_detail is not None:
             d["score_detail"] = self.score_detail
+        if self.evolution_signals is not None:
+            d["evolution_signals"] = self.evolution_signals
         return d
 
     def to_json(self) -> str:
@@ -113,6 +116,7 @@ class Attempt:
             feedback=data.get("feedback", ""),
             shared_state_hash=data.get("shared_state_hash"),
             score_detail=data.get("score_detail"),
+            evolution_signals=data.get("evolution_signals"),
         )
 
     @classmethod

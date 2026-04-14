@@ -335,6 +335,52 @@ class TestScoreDetailAPI:
         assert top.get("score_detail") == detail
 
 
+# ── Evolution signals API ────────────────────────────────────────────────
+
+class TestEvolutionSignalsAPI:
+    def test_submit_with_signals(self, client):
+        tid = "signals-test"
+        client.post("/evolution/tasks", json={"task_id": tid})
+        signals = {
+            "grader": {"source": "grader.py", "score": 0.75},
+            "judge": {"source": "llm", "score": 8, "confidence": 0.9},
+        }
+        r = client.post(f"/evolution/{tid}/scores", json={
+            "agent_id": "agent-sig",
+            "score": 0.75,
+            "evolution_signals": signals,
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["evolution_signals"] == signals
+
+    def test_submit_without_signals(self, client):
+        tid = "no-signals-test"
+        client.post("/evolution/tasks", json={"task_id": tid})
+        r = client.post(f"/evolution/{tid}/scores", json={
+            "agent_id": "agent-ns", "score": 0.5,
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["evolution_signals"] is None
+
+    def test_signals_in_heartbeat_prompts(self, client):
+        """Heartbeat prompts should include evolution signals JSON."""
+        tid = "sig-hb-test"
+        client.post("/evolution/tasks", json={"task_id": tid})
+        signals = {"eval": {"passed": 3, "total": 5}}
+        r = client.post(f"/evolution/{tid}/scores", json={
+            "agent_id": "agent-shb",
+            "score": 0.6,
+            "evolution_signals": signals,
+        })
+        data = r.json()
+        prompts = data.get("heartbeat_prompts", [])
+        # At least one prompt should contain the signals JSON
+        has_signals = any('"eval"' in p["prompt"] for p in prompts)
+        assert has_signals, "Heartbeat prompts should contain evolution signals"
+
+
 # ── Heartbeat prompts in score response ─────────────────────────────────
 
 class TestHeartbeatPrompts:

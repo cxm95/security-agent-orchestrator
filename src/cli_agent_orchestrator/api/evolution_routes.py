@@ -68,6 +68,7 @@ class ScoreReport(BaseModel):
     agent_id: str
     score: float | None = None
     score_detail: dict[str, float] | None = None  # multi-dimension scores
+    evolution_signals: dict[str, Any] | None = None  # transparent multi-source signals
     title: str = ""
     feedback: str = ""
 
@@ -82,6 +83,7 @@ class ScoreResponse(BaseModel):
     status: str
     score: float | None
     score_detail: dict[str, float] | None = None
+    evolution_signals: dict[str, Any] | None = None
     best_score: float | None
     leaderboard_position: int | None
     evals_since_improvement: int
@@ -209,6 +211,7 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
         timestamp=datetime.now(timezone.utc).isoformat(),
         feedback=body.feedback,
         score_detail=body.score_detail,
+        evolution_signals=body.evolution_signals,
     )
 
     write_attempt(EVOLUTION_DIR, attempt)
@@ -243,6 +246,7 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
         global_eval_count=global_eval_count,
         evals_since_improvement=evals_no_improve,
         leaderboard=format_leaderboard(lb),
+        evolution_signals=body.evolution_signals,
     )
     hb_names = [h["name"] for h in hb_triggered]
     hb_prompts = [HeartbeatPrompt(name=h["name"], prompt=h["prompt"]) for h in hb_triggered]
@@ -252,6 +256,7 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
         status=determined_status,
         score=body.score,
         score_detail=body.score_detail,
+        evolution_signals=body.evolution_signals,
         best_score=get_best_score(EVOLUTION_DIR, task_id, body.agent_id),
         leaderboard_position=position,
         evals_since_improvement=evals_no_improve,

@@ -100,9 +100,9 @@ class TestHeartbeatConfig:
 
     def test_defaults(self):
         defaults = get_default_actions()
-        assert len(defaults) == 3
+        assert len(defaults) == 4
         names = {a["name"] for a in defaults}
-        assert names == {"reflect", "consolidate", "pivot"}
+        assert names == {"reflect", "consolidate", "pivot", "evolve_skill"}
 
     def test_write_and_read(self):
         actions = [{"name": "reflect", "every": 2, "trigger": "interval"}]
@@ -117,7 +117,7 @@ class TestHeartbeatConfig:
 
     def test_build_runner_uses_defaults(self):
         runner = build_runner(self.evo_dir, "new-agent")
-        assert len(runner.actions) == 3
+        assert len(runner.actions) == 4
 
 
 # ── Prompt rendering ─────────────────────────────────────────────────
@@ -201,7 +201,7 @@ class TestHeartbeatAPI:
         # Get defaults
         r = client.get("/evolution/heartbeat/test-agent")
         data = r.json()
-        assert len(data["actions"]) == 3
+        assert len(data["actions"]) == 4
 
         # Set custom
         custom = [{"name": "reflect", "every": 3, "trigger": "interval"}]

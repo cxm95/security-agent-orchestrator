@@ -2,6 +2,11 @@
 
 Pause and synthesize shared knowledge. Call `cao_search_knowledge` and `cao_get_shared_notes` to review what the team knows.
 
+### Evolution Signals
+```json
+{evolution_signals_json}
+```
+
 ### Process
 
 1. **Read**: Search notes with `cao_search_knowledge(query="", tags="{task_id}")` to find all notes for this task.

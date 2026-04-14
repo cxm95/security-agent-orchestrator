@@ -28,6 +28,7 @@ DEFAULT_PROMPTS = {
     "consolidate": _load_prompt("consolidate"),
     "pivot": _load_prompt("pivot"),
     "feedback_reflect": _load_prompt("feedback_reflect"),
+    "evolve_skill": _load_prompt("evolve_skill"),
 }
 
 
@@ -102,11 +103,12 @@ def write_heartbeat_config(evo_dir: str, agent_id: str, actions: list[dict]) -> 
 
 
 def get_default_actions() -> list[dict]:
-    """Return sensible defaults: reflect every 1, consolidate every 5, pivot after 5 stalls."""
+    """Return sensible defaults: reflect every 1, consolidate every 5, pivot after 5, evolve_skill after 3."""
     return [
         {"name": "reflect", "every": 1, "trigger": "interval", "is_global": False},
         {"name": "consolidate", "every": 5, "trigger": "interval", "is_global": True},
         {"name": "pivot", "every": 5, "trigger": "plateau", "is_global": False},
+        {"name": "evolve_skill", "every": 3, "trigger": "plateau", "is_global": False},
     ]
 
 
@@ -132,12 +134,15 @@ def build_runner(evo_dir: str, agent_id: str) -> HeartbeatRunner:
 
 
 def render_prompt(action: HeartbeatAction, agent_id: str, task_id: str,
-                  leaderboard: str = "") -> str:
+                  leaderboard: str = "",
+                  evolution_signals: dict | None = None) -> str:
     """Fill template variables in a heartbeat prompt."""
+    signals_json = json.dumps(evolution_signals, indent=2) if evolution_signals else "{}"
     return (action.prompt
             .replace("{agent_id}", agent_id)
             .replace("{task_id}", task_id)
-            .replace("{leaderboard}", leaderboard))
+            .replace("{leaderboard}", leaderboard)
+            .replace("{evolution_signals_json}", signals_json))
 
 
 # ── Integration: check_triggers ───────────────────────────────────────
@@ -151,6 +156,7 @@ def check_triggers(
     evals_since_improvement: int = 0,
     leaderboard: str = "",
     reports_dir: str | Path | None = None,
+    evolution_signals: dict | None = None,
 ) -> list[dict]:
     """Check heartbeat triggers and return rendered prompts to send.
 
@@ -166,16 +172,18 @@ def check_triggers(
     )
     results = []
     for action in triggered:
-        prompt = render_prompt(action, agent_id, task_id, leaderboard)
+        prompt = render_prompt(action, agent_id, task_id, leaderboard, evolution_signals)
         results.append({"name": action.name, "prompt": prompt})
         logger.info(f"Heartbeat triggered: {action.name} for agent={agent_id} task={task_id}")
 
     # Inject feedback_reflect if there are new .result files
     if reports_dir and has_new_feedback(reports_dir):
         prompt = DEFAULT_PROMPTS.get("feedback_reflect", "")
+        signals_json = json.dumps(evolution_signals, indent=2) if evolution_signals else "{}"
         prompt = (prompt
                   .replace("{task_id}", task_id)
-                  .replace("{agent_id}", agent_id))
+                  .replace("{agent_id}", agent_id)
+                  .replace("{evolution_signals_json}", signals_json))
         results.append({"name": "feedback_reflect", "prompt": prompt})
         logger.info(f"Heartbeat triggered: feedback_reflect for agent={agent_id} task={task_id}")
 

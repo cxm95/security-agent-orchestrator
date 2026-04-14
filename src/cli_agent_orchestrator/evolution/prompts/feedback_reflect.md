@@ -2,6 +2,11 @@
 
 New human feedback is available. Review the annotations and adjust your approach.
 
+### Evolution Signals
+```json
+{evolution_signals_json}
+```
+
 ### Review Feedback
 Check your `.cao-reports/` directory for `.result` files. Each contains human annotations
 (tp/fp/uncertain) for findings you previously submitted.

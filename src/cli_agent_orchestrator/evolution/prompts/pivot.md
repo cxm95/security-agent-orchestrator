@@ -2,6 +2,11 @@
 
 **You have not improved your score in several consecutive evals.** Incremental tweaks are unlikely to help. Try something fundamentally different.
 
+### Evolution Signals
+```json
+{evolution_signals_json}
+```
+
 ### Step 1: Diagnose
 - Check `cao_get_leaderboard(task_id="{task_id}")` — where do you stand?
 - Are your recent scores flat or oscillating? Why?
