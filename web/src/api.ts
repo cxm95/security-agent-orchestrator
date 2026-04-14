@@ -75,6 +75,45 @@ export interface Flow {
   prompt_template: string | null
 }
 
+export interface EvolutionTask {
+  task_id: string
+  name: string
+  description: string
+  attempt_count: number
+  best_score: number | null
+}
+
+export interface EvolutionAttempt {
+  run_id: string
+  agent_id: string
+  task_id: string
+  title: string
+  score: number | null
+  status: string
+  timestamp: string
+  feedback: string
+  score_detail?: Record<string, number>
+}
+
+export interface EvolutionNote {
+  filename: string
+  meta: Record<string, string>
+  content: string
+}
+
+export interface EvolutionSkill {
+  name: string
+  meta: Record<string, string>
+  content: string
+}
+
+export interface EvolutionKnowledgeResult {
+  type: string
+  name: string
+  snippet: string
+  tags: string
+}
+
 export interface ProviderInfo {
   name: string
   binary: string
@@ -136,4 +175,16 @@ export const api = {
   enableFlow: (name: string) => fetchJSON<{ success: boolean }>(`/flows/${name}/enable`, { method: 'POST' }),
   disableFlow: (name: string) => fetchJSON<{ success: boolean }>(`/flows/${name}/disable`, { method: 'POST' }),
   runFlow: (name: string) => fetchJSON<{ executed: boolean }>(`/flows/${name}/run`, { method: 'POST', timeoutMs: 90000 }),
+
+  // Evolution
+  listTasks: () => fetchJSON<EvolutionTask[]>('/evolution/tasks'),
+  getLeaderboard: (taskId: string, topN = 20) =>
+    fetchJSON<EvolutionAttempt[]>(`/evolution/${taskId}/leaderboard?top_n=${topN}`),
+  getAttempts: (taskId: string) =>
+    fetchJSON<EvolutionAttempt[]>(`/evolution/${taskId}/attempts`),
+  listNotes: (tags = '') =>
+    fetchJSON<EvolutionNote[]>(`/evolution/knowledge/notes${tags ? `?tags=${encodeURIComponent(tags)}` : ''}`),
+  listSkills: () => fetchJSON<EvolutionSkill[]>('/evolution/knowledge/skills'),
+  searchKnowledge: (query: string, tags = '', topK = 10) =>
+    fetchJSON<EvolutionKnowledgeResult[]>(`/evolution/knowledge/search?query=${encodeURIComponent(query)}&tags=${encodeURIComponent(tags)}&top_k=${topK}`),
 }

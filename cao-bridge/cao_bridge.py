@@ -74,3 +74,75 @@ class CaoBridge:
                 yield msg
             else:
                 time.sleep(interval)
+
+    # ── Evolution endpoints ──────────────────────────────────────────
+
+    def get_grader(self, task_id: str) -> Optional[str]:
+        """Fetch grader source code for a task. Returns None if not found."""
+        resp = requests.get(f"{self.hub_url}/evolution/{task_id}/grader",
+                            timeout=self._TIMEOUT)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json().get("grader_code")
+
+    def report_score(self, task_id: str, score: Optional[float],
+                     title: str = "", feedback: str = "") -> dict:
+        """Report an evaluation score to the Hub."""
+        agent_id = self.terminal_id or "anonymous"
+        resp = requests.post(
+            f"{self.hub_url}/evolution/{task_id}/scores",
+            json={"agent_id": agent_id, "score": score,
+                   "title": title, "feedback": feedback},
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_leaderboard(self, task_id: str, top_n: int = 10) -> dict:
+        """Get the leaderboard for a task."""
+        resp = requests.get(
+            f"{self.hub_url}/evolution/{task_id}/leaderboard",
+            params={"top_n": top_n}, timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def share_note(self, title: str, content: str,
+                   tags: Optional[list] = None, origin_task: str = "",
+                   origin_score: Optional[float] = None,
+                   confidence: str = "medium") -> dict:
+        """Share a knowledge note to the Hub."""
+        resp = requests.post(
+            f"{self.hub_url}/evolution/knowledge/notes",
+            json={"title": title, "content": content,
+                   "tags": tags or [], "agent_id": self.terminal_id or "",
+                   "origin_task": origin_task, "origin_score": origin_score,
+                   "confidence": confidence},
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def share_skill(self, name: str, content: str,
+                    tags: Optional[list] = None) -> dict:
+        """Share a reusable skill to the Hub."""
+        resp = requests.post(
+            f"{self.hub_url}/evolution/knowledge/skills",
+            json={"name": name, "content": content,
+                   "tags": tags or [], "agent_id": self.terminal_id or ""},
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def search_knowledge(self, query: str, tags: str = "",
+                         top_k: int = 10) -> list:
+        """Search shared knowledge (notes + skills)."""
+        resp = requests.get(
+            f"{self.hub_url}/evolution/knowledge/search",
+            params={"query": query, "tags": tags, "top_k": top_k},
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()

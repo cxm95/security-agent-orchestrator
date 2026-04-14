@@ -46,6 +46,7 @@ from cli_agent_orchestrator.services import (
     session_service,
     terminal_service,
 )
+from cli_agent_orchestrator.api.evolution_routes import ensure_evolution_repo, router as evolution_router
 from cli_agent_orchestrator.services.cleanup_service import cleanup_old_data
 from cli_agent_orchestrator.services.inbox_service import LogFileHandler
 from cli_agent_orchestrator.services.terminal_service import OutputMode
@@ -115,6 +116,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting CLI Agent Orchestrator server...")
     setup_logging()
     init_db()
+    ensure_evolution_repo()
 
     # Run cleanup in background
     asyncio.create_task(asyncio.to_thread(cleanup_old_data))
@@ -167,6 +169,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(evolution_router)
 
 
 @app.get("/health")

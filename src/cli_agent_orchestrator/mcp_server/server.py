@@ -105,6 +105,10 @@ mcp = FastMCP(
     """,
 )
 
+# Register evolution tools (score reporting, knowledge sharing, etc.)
+from cli_agent_orchestrator.mcp_server.evolution_tools import register_evolution_tools
+register_evolution_tools(mcp)
+
 
 def _create_terminal(
     agent_profile: str,

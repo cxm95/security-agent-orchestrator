@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "cao-bridge": {
+      "command": "python3",
+      "args": ["cao_bridge_mcp.py"],
+      "env": {
+        "CAO_HUB_URL": "http://127.0.0.1:9889",
+        "CAO_AGENT_PROFILE": "remote-claude-code",
+        "no_proxy": "127.0.0.1,localhost",
+        "NO_PROXY": "127.0.0.1,localhost"
+      }
+    }
+  }
+}

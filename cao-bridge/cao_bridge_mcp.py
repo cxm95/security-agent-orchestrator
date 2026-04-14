@@ -76,6 +76,100 @@ async def cao_report(
     return json.dumps({"ok": True})
 
 
+# ── Evolution tools ──────────────────────────────────────────────────
+
+@mcp.tool()
+async def cao_get_grader(task_id: str) -> str:
+    """Fetch grader source code for a task from the Hub.
+
+    Returns JSON with grader_code (string) or null if not found.
+    Download this, then run evaluate() locally to get a score.
+    """
+    code = bridge.get_grader(task_id)
+    return json.dumps({"grader_code": code})
+
+
+@mcp.tool()
+async def cao_report_score(
+    task_id: str,
+    score: float = 0.0,
+    title: str = "",
+    feedback: str = "",
+) -> str:
+    """Report an evaluation score to the Hub.
+
+    Args:
+        task_id: The task being evaluated
+        score: Numeric score (higher is better). Use 0 for crashes.
+        title: Short description of this attempt
+        feedback: Grader feedback text
+    """
+    result = bridge.report_score(task_id, score, title=title, feedback=feedback)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def cao_get_leaderboard(task_id: str, top_n: int = 10) -> str:
+    """Get the leaderboard for a task — top attempts sorted by score."""
+    result = bridge.get_leaderboard(task_id, top_n=top_n)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def cao_share_note(
+    title: str,
+    content: str,
+    tags: str = "",
+    origin_task: str = "",
+    confidence: str = "medium",
+) -> str:
+    """Share a knowledge note with the team via the Hub.
+
+    Args:
+        title: Note title
+        content: Note body (markdown)
+        tags: Comma-separated tags for categorization
+        origin_task: Task that produced this insight
+        confidence: high/medium/low
+    """
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    result = bridge.share_note(title, content, tags=tag_list,
+                               origin_task=origin_task, confidence=confidence)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def cao_share_skill(
+    name: str,
+    content: str,
+    tags: str = "",
+) -> str:
+    """Share a reusable skill with the team via the Hub.
+
+    Args:
+        name: Skill name (alphanumeric, hyphens, underscores)
+        content: Skill content (markdown)
+        tags: Comma-separated tags
+    """
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    result = bridge.share_skill(name, content, tags=tag_list)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def cao_search_knowledge(
+    query: str,
+    tags: str = "",
+    top_k: int = 10,
+) -> str:
+    """Search shared knowledge (notes + skills) by text and tags.
+
+    Returns matching notes and skills with snippets.
+    """
+    results = bridge.search_knowledge(query, tags=tags, top_k=top_k)
+    return json.dumps(results)
+
+
 def main():
     mcp.run(transport="stdio")
 

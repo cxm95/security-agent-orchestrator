@@ -1,0 +1,464 @@
+"""Evolution API routes — appended to the CAO FastAPI app.
+
+Endpoints for score reporting, leaderboard, task management, and knowledge CRUD.
+All routes prefixed with /evolution/.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from cli_agent_orchestrator.evolution.checkpoint import (
+    checkpoint,
+    init_checkpoint_repo,
+    shared_dir,
+)
+from cli_agent_orchestrator.evolution.attempts import (
+    compare_to_history,
+    count_evals_since_improvement,
+    format_leaderboard,
+    get_best_score,
+    get_leaderboard,
+    read_attempts,
+    write_attempt,
+)
+from cli_agent_orchestrator.evolution.heartbeat import check_triggers
+from cli_agent_orchestrator.evolution.types import Attempt
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/evolution", tags=["evolution"])
+
+EVOLUTION_DIR = str(Path.home() / ".cao-evolution")
+
+
+# ── Pydantic models ─────────────────────────────────────────────────────
+
+class TaskCreate(BaseModel):
+    task_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str = ""
+    description: str = ""
+    grader_code: str = ""  # grader.py source content
+
+
+class ScoreReport(BaseModel):
+    agent_id: str
+    score: float | None = None
+    score_detail: dict[str, float] | None = None  # multi-dimension scores
+    title: str = ""
+    feedback: str = ""
+
+
+class HeartbeatPrompt(BaseModel):
+    name: str
+    prompt: str
+
+
+class ScoreResponse(BaseModel):
+    run_id: str
+    status: str
+    score: float | None
+    score_detail: dict[str, float] | None = None
+    best_score: float | None
+    leaderboard_position: int | None
+    evals_since_improvement: int
+    heartbeat_triggered: list[str] = []
+    heartbeat_prompts: list[HeartbeatPrompt] = []
+
+
+class NoteCreate(BaseModel):
+    title: str
+    content: str
+    tags: list[str] = []
+    agent_id: str = ""
+    origin_task: str = ""
+    origin_score: float | None = None
+    confidence: str = "medium"
+
+
+class SkillCreate(BaseModel):
+    name: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$")
+    content: str
+    tags: list[str] = []
+    agent_id: str = ""
+
+
+# ── Task management ─────────────────────────────────────────────────────
+
+@router.post("/tasks", status_code=201)
+async def create_task(body: TaskCreate) -> dict[str, Any]:
+    sd = shared_dir(EVOLUTION_DIR)
+    task_dir = sd / "tasks" / body.task_id
+    if task_dir.exists() and (task_dir / "task.yaml").exists():
+        raise HTTPException(409, f"Task '{body.task_id}' already exists")
+
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "task.yaml").write_text(
+        f"name: {body.name or body.task_id}\ndescription: {body.description}\n"
+    )
+    if body.grader_code:
+        (task_dir / "grader.py").write_text(body.grader_code)
+
+    checkpoint(EVOLUTION_DIR, "hub", f"create task {body.task_id}")
+    return {"task_id": body.task_id, "created": True}
+
+
+@router.get("/tasks")
+async def list_tasks() -> list[dict[str, str]]:
+    sd = shared_dir(EVOLUTION_DIR)
+    tasks_dir = sd / "tasks"
+    if not tasks_dir.exists():
+        return []
+    result = []
+    for d in sorted(tasks_dir.iterdir()):
+        if d.is_dir() and (d / "task.yaml").exists():
+            result.append({"task_id": d.name, "path": str(d)})
+    return result
+
+
+@router.get("/{task_id}")
+async def get_task(task_id: str) -> dict[str, Any]:
+    sd = shared_dir(EVOLUTION_DIR)
+    task_dir = sd / "tasks" / task_id
+    if not (task_dir / "task.yaml").exists():
+        raise HTTPException(404, f"Task '{task_id}' not found")
+
+    info: dict[str, Any] = {"task_id": task_id}
+    info["task_yaml"] = (task_dir / "task.yaml").read_text()
+    info["has_grader"] = (task_dir / "grader.py").exists()
+    attempts = read_attempts(EVOLUTION_DIR, task_id)
+    info["attempt_count"] = len(attempts)
+    info["best_score"] = get_best_score(EVOLUTION_DIR, task_id)
+    return info
+
+
+@router.get("/{task_id}/grader")
+async def get_grader(task_id: str) -> dict[str, str]:
+    sd = shared_dir(EVOLUTION_DIR)
+    grader_path = sd / "tasks" / task_id / "grader.py"
+    if not grader_path.exists():
+        raise HTTPException(404, f"No grader.py for task '{task_id}'")
+    return {"task_id": task_id, "grader_code": grader_path.read_text()}
+
+
+# ── Score reporting (core) ───────────────────────────────────────────────
+
+@router.post("/{task_id}/scores", response_model=ScoreResponse)
+async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
+    sd = shared_dir(EVOLUTION_DIR)
+    if not (sd / "tasks" / task_id).exists():
+        # Auto-create task dir for convenience
+        (sd / "tasks" / task_id).mkdir(parents=True, exist_ok=True)
+
+    # Determine status by comparing to history
+    determined_status = compare_to_history(EVOLUTION_DIR, task_id, body.agent_id, body.score)
+
+    run_id = uuid.uuid4().hex[:12]
+    attempt = Attempt(
+        run_id=run_id,
+        agent_id=body.agent_id,
+        task_id=task_id,
+        title=body.title,
+        score=body.score,
+        status=determined_status,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        feedback=body.feedback,
+        score_detail=body.score_detail,
+    )
+
+    write_attempt(EVOLUTION_DIR, attempt)
+    sha = checkpoint(EVOLUTION_DIR, body.agent_id, f"score {task_id}: {body.score}")
+    if sha:
+        attempt.shared_state_hash = sha
+        write_attempt(EVOLUTION_DIR, attempt)  # persist the hash
+
+    # Leaderboard position
+    lb = get_leaderboard(EVOLUTION_DIR, task_id)
+    position = None
+    for i, a in enumerate(lb, 1):
+        if a.run_id == run_id:
+            position = i
+            break
+
+    evals_no_improve = count_evals_since_improvement(EVOLUTION_DIR, task_id, body.agent_id)
+
+    # Check heartbeat triggers — count global evals across all tasks
+    local_eval_count = len(read_attempts(EVOLUTION_DIR, task_id))
+    tasks_dir = Path(EVOLUTION_DIR) / "shared" / "tasks"
+    global_eval_count = 0
+    if tasks_dir.exists():
+        for td in tasks_dir.iterdir():
+            if td.is_dir():
+                global_eval_count += len(read_attempts(EVOLUTION_DIR, td.name))
+    hb_triggered = check_triggers(
+        evo_dir=EVOLUTION_DIR,
+        agent_id=body.agent_id,
+        task_id=task_id,
+        local_eval_count=local_eval_count,
+        global_eval_count=global_eval_count,
+        evals_since_improvement=evals_no_improve,
+        leaderboard=format_leaderboard(lb),
+    )
+    hb_names = [h["name"] for h in hb_triggered]
+    hb_prompts = [HeartbeatPrompt(name=h["name"], prompt=h["prompt"]) for h in hb_triggered]
+
+    return ScoreResponse(
+        run_id=run_id,
+        status=determined_status,
+        score=body.score,
+        score_detail=body.score_detail,
+        best_score=get_best_score(EVOLUTION_DIR, task_id, body.agent_id),
+        leaderboard_position=position,
+        evals_since_improvement=evals_no_improve,
+        heartbeat_triggered=hb_names,
+        heartbeat_prompts=hb_prompts,
+    )
+
+
+# ── Leaderboard & attempts ──────────────────────────────────────────────
+
+@router.get("/{task_id}/leaderboard")
+async def leaderboard(task_id: str, top_n: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+    lb = get_leaderboard(EVOLUTION_DIR, task_id, top_n)
+    return {
+        "task_id": task_id,
+        "entries": [a.to_dict() for a in lb],
+        "formatted": format_leaderboard(lb),
+    }
+
+
+@router.get("/{task_id}/attempts")
+async def list_attempts(task_id: str) -> list[dict[str, Any]]:
+    return [a.to_dict() for a in read_attempts(EVOLUTION_DIR, task_id)]
+
+
+# ── Knowledge: notes ─────────────────────────────────────────────────────
+
+@router.post("/knowledge/notes", status_code=201)
+async def create_note(body: NoteCreate) -> dict[str, Any]:
+    sd = shared_dir(EVOLUTION_DIR)
+    notes_dir = sd / "knowledge" / "notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate filename from title
+    slug = body.title.lower().replace(" ", "-")[:60]
+    slug = "".join(c for c in slug if c.isalnum() or c == "-")
+    filename = f"{slug}.md"
+    path = notes_dir / filename
+    # Avoid collision
+    if path.exists():
+        filename = f"{slug}-{uuid.uuid4().hex[:6]}.md"
+        path = notes_dir / filename
+
+    # Build YAML frontmatter
+    fm_lines = [
+        "---",
+        f"title: \"{body.title}\"",
+        f"tags: [{', '.join(body.tags)}]",
+    ]
+    if body.origin_task:
+        fm_lines.append(f"origin_task: {body.origin_task}")
+    if body.origin_score is not None:
+        fm_lines.append(f"origin_score: {body.origin_score}")
+    fm_lines.append(f"confidence: {body.confidence}")
+    if body.agent_id:
+        fm_lines.append(f"created_by: {body.agent_id}")
+    fm_lines.append(f"created_at: {datetime.now(timezone.utc).isoformat()}")
+    fm_lines.append("---")
+
+    path.write_text("\n".join(fm_lines) + "\n" + body.content + "\n")
+    checkpoint(EVOLUTION_DIR, body.agent_id or "hub", f"note: {body.title}")
+
+    return {"filename": filename, "path": str(path)}
+
+
+@router.get("/knowledge/notes")
+async def list_notes(tags: str = Query("", description="Comma-separated tags to filter")) -> list[dict[str, Any]]:
+    sd = shared_dir(EVOLUTION_DIR)
+    notes_dir = sd / "knowledge" / "notes"
+    if not notes_dir.exists():
+        return []
+
+    tag_filter = {t.strip().lower() for t in tags.split(",") if t.strip()} if tags else set()
+    results = []
+
+    for f in sorted(notes_dir.glob("*.md")):
+        text = f.read_text()
+        meta = _parse_frontmatter(text)
+        if tag_filter:
+            note_tags = {t.strip().lower() for t in meta.get("tags", "").split(",")}
+            if not tag_filter & note_tags:
+                continue
+        results.append({"filename": f.name, "meta": meta, "content": _body_after_frontmatter(text)})
+
+    return results
+
+
+# ── Knowledge: skills ────────────────────────────────────────────────────
+
+@router.post("/knowledge/skills", status_code=201)
+async def create_skill(body: SkillCreate) -> dict[str, Any]:
+    sd = shared_dir(EVOLUTION_DIR)
+    skill_dir = sd / "knowledge" / "skills" / body.name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    path = skill_dir / "SKILL.md"
+    fm_lines = [
+        "---",
+        f"name: \"{body.name}\"",
+        f"tags: [{', '.join(body.tags)}]",
+    ]
+    if body.agent_id:
+        fm_lines.append(f"created_by: {body.agent_id}")
+    fm_lines.append(f"created_at: {datetime.now(timezone.utc).isoformat()}")
+    fm_lines.append("---")
+
+    path.write_text("\n".join(fm_lines) + "\n" + body.content + "\n")
+    checkpoint(EVOLUTION_DIR, body.agent_id or "hub", f"skill: {body.name}")
+
+    return {"name": body.name, "path": str(path)}
+
+
+@router.get("/knowledge/skills")
+async def list_skills() -> list[dict[str, Any]]:
+    sd = shared_dir(EVOLUTION_DIR)
+    skills_dir = sd / "knowledge" / "skills"
+    if not skills_dir.exists():
+        return []
+
+    results = []
+    for d in sorted(skills_dir.iterdir()):
+        skill_file = d / "SKILL.md"
+        if d.is_dir() and skill_file.exists():
+            text = skill_file.read_text()
+            results.append({
+                "name": d.name,
+                "meta": _parse_frontmatter(text),
+                "content": _body_after_frontmatter(text),
+            })
+    return results
+
+
+# ── Knowledge: search (phase 1 — grep + tags) ───────────────────────────
+
+@router.get("/knowledge/search")
+async def search_knowledge(
+    query: str = Query(..., min_length=1),
+    tags: str = Query("", description="Comma-separated tags"),
+    top_k: int = Query(10, ge=1, le=50),
+) -> list[dict[str, Any]]:
+    """Phase 1: simple text search + tag filter over notes and skills."""
+    sd = shared_dir(EVOLUTION_DIR)
+    tag_filter = {t.strip().lower() for t in tags.split(",") if t.strip()} if tags else set()
+    query_lower = query.lower()
+    results = []
+
+    # Search notes
+    notes_dir = sd / "knowledge" / "notes"
+    if notes_dir.exists():
+        for f in notes_dir.rglob("*.md"):
+            text = f.read_text()
+            if query_lower not in text.lower():
+                continue
+            meta = _parse_frontmatter(text)
+            if tag_filter:
+                note_tags = {t.strip().lower() for t in meta.get("tags", "").split(",")}
+                if not tag_filter & note_tags:
+                    continue
+            results.append({
+                "type": "note",
+                "filename": f.name,
+                "meta": meta,
+                "snippet": _snippet(text, query_lower),
+            })
+
+    # Search skills
+    skills_dir = sd / "knowledge" / "skills"
+    if skills_dir.exists():
+        for f in skills_dir.rglob("SKILL.md"):
+            text = f.read_text()
+            if query_lower not in text.lower():
+                continue
+            meta = _parse_frontmatter(text)
+            results.append({
+                "type": "skill",
+                "name": f.parent.name,
+                "meta": meta,
+                "snippet": _snippet(text, query_lower),
+            })
+
+    return results[:top_k]
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def _parse_frontmatter(text: str) -> dict[str, str]:
+    """Extract YAML frontmatter key-value pairs (simple line-based parsing)."""
+    if not text.startswith("---"):
+        return {}
+    lines = text.split("\n")
+    meta: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" in line:
+            key, _, val = line.partition(":")
+            meta[key.strip()] = val.strip().strip('"').strip("[").strip("]")
+    return meta
+
+
+def _body_after_frontmatter(text: str) -> str:
+    """Return content after the closing --- of frontmatter."""
+    if not text.startswith("---"):
+        return text
+    parts = text.split("---", 2)
+    return parts[2].strip() if len(parts) >= 3 else ""
+
+
+def _snippet(text: str, query: str, context: int = 80) -> str:
+    """Return a snippet around the first match of query in text."""
+    idx = text.lower().find(query)
+    if idx < 0:
+        return text[:context]
+    start = max(0, idx - context // 2)
+    end = min(len(text), idx + len(query) + context // 2)
+    return ("…" if start > 0 else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+# ── Heartbeat config endpoints ───────────────────────────────────────────
+
+from cli_agent_orchestrator.evolution.heartbeat import (
+    get_default_actions,
+    read_heartbeat_config,
+    write_heartbeat_config,
+)
+
+
+@router.get("/heartbeat/{agent_id}")
+async def get_heartbeat_config(agent_id: str) -> dict[str, Any]:
+    """Get heartbeat config for an agent (or '_global')."""
+    actions = read_heartbeat_config(EVOLUTION_DIR, agent_id)
+    if not actions:
+        actions = get_default_actions()
+    return {"agent_id": agent_id, "actions": actions}
+
+
+@router.put("/heartbeat/{agent_id}")
+async def set_heartbeat_config(agent_id: str, body: dict[str, Any]) -> dict[str, str]:
+    """Set heartbeat config for an agent (or '_global')."""
+    write_heartbeat_config(EVOLUTION_DIR, agent_id, body.get("actions", []))
+    return {"status": "ok"}
+
+
+# ── Init helper (called by main.py lifespan) ────────────────────────────
+
+def ensure_evolution_repo() -> None:
+    """Initialize the shared evolution repo if it doesn't exist yet."""
+    init_checkpoint_repo(EVOLUTION_DIR)

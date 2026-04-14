@@ -5,14 +5,16 @@ import { DashboardHome } from './components/DashboardHome'
 import { AgentPanel } from './components/AgentPanel'
 import { FlowsPanel } from './components/FlowsPanel'
 import { SettingsPanel } from './components/SettingsPanel'
-import { Bot, Home, Clock, Settings, CheckCircle, XCircle, Info, Wifi, WifiOff } from 'lucide-react'
+import { EvolutionPanel } from './components/EvolutionPanel'
+import { Bot, Home, Clock, Settings, CheckCircle, XCircle, Info, Wifi, WifiOff, TrendingUp } from 'lucide-react'
 
-type TabKey = 'home' | 'agents' | 'flows' | 'settings'
+type TabKey = 'home' | 'agents' | 'flows' | 'evolution' | 'settings'
 
 const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'home', label: 'Home', icon: <Home size={16} /> },
   { key: 'agents', label: 'Agents', icon: <Bot size={16} /> },
   { key: 'flows', label: 'Flows', icon: <Clock size={16} /> },
+  { key: 'evolution', label: 'Evolution', icon: <TrendingUp size={16} /> },
   { key: 'settings', label: 'Settings', icon: <Settings size={16} /> },
 ]
 
@@ -133,6 +135,7 @@ export default function App() {
             {tab === 'home' && <DashboardHome onNavigate={(t) => setTab(t as TabKey)} />}
             {tab === 'agents' && <AgentPanel />}
             {tab === 'flows' && <FlowsPanel />}
+            {tab === 'evolution' && <EvolutionPanel />}
             {tab === 'settings' && <SettingsPanel />}
           </Suspense>
         </ErrorBoundary>
