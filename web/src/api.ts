@@ -114,6 +114,47 @@ export interface EvolutionKnowledgeResult {
   tags: string
 }
 
+export interface ReportFinding {
+  finding_id: string
+  description: string
+  severity: string
+  file_path: string
+  line: number | null
+  category: string
+}
+
+export interface HumanLabel {
+  finding_id: string
+  verdict: 'tp' | 'fp' | 'uncertain'
+  severity_override?: string
+  comment: string
+  annotated_by: string
+}
+
+export interface Report {
+  report_id: string
+  task_id: string
+  agent_id: string
+  terminal_id: string
+  findings: ReportFinding[]
+  auto_score: number | null
+  human_score: number | null
+  human_labels: HumanLabel[]
+  status: 'pending' | 'annotated'
+  submitted_at: string
+  annotated_at: string | null
+}
+
+export interface ReportStats {
+  total: number
+  pending: number
+  annotated: number
+  tp: number
+  fp: number
+  uncertain: number
+  precision: number | null
+}
+
 export interface ProviderInfo {
   name: string
   binary: string
@@ -187,4 +228,16 @@ export const api = {
   listSkills: () => fetchJSON<EvolutionSkill[]>('/evolution/knowledge/skills'),
   searchKnowledge: (query: string, tags = '', topK = 10) =>
     fetchJSON<EvolutionKnowledgeResult[]>(`/evolution/knowledge/search?query=${encodeURIComponent(query)}&tags=${encodeURIComponent(tags)}&top_k=${topK}`),
+
+  // Reports / Human Feedback
+  listReports: (taskId: string, terminalId = '', status = '') =>
+    fetchJSON<Report[]>(`/evolution/${taskId}/reports?terminal_id=${encodeURIComponent(terminalId)}&status=${encodeURIComponent(status)}`),
+  getReportStats: (taskId: string) =>
+    fetchJSON<ReportStats>(`/evolution/${taskId}/reports/stats`),
+  annotateReport: (taskId: string, reportId: string, body: { human_score?: number | null; labels: Array<{ finding_id: string; verdict: string; comment?: string }>; annotated_by?: string }) =>
+    fetchJSON<{ status: string; report_id: string }>(`/evolution/${taskId}/reports/${reportId}/annotate`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 }

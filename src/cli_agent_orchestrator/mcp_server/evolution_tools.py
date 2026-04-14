@@ -167,3 +167,83 @@ def register_evolution_tools(mcp: FastMCP) -> None:
             return r.json()
         except Exception as e:
             return [{"error": str(e)}]
+
+    # ── Report / Human Feedback tools ────────────────────────────────────
+
+    @mcp.tool()
+    def cao_submit_report(
+        task_id: str = Field(description="Task identifier"),
+        agent_id: str = Field(description="This agent's terminal ID"),
+        findings: str = Field(description="JSON array of findings [{description, severity?, file_path?, line?, category?}]"),
+        terminal_id: str = Field(default="", description="Terminal/session ID for this agent"),
+        auto_score: Optional[float] = Field(default=None, description="Automated score from grader"),
+    ) -> Dict[str, Any]:
+        """Submit a vulnerability report to the Hub. Returns report_id.
+
+        findings should be a JSON string of an array, e.g.:
+        [{"description": "SQL injection", "severity": "high", "file_path": "login.py"}]
+        """
+        import json as _json
+        try:
+            findings_list = _json.loads(findings) if isinstance(findings, str) else findings
+            r = _http.post(
+                f"{API_BASE_URL}/evolution/{task_id}/reports",
+                json={
+                    "agent_id": agent_id,
+                    "terminal_id": terminal_id or agent_id,
+                    "findings": findings_list,
+                    "auto_score": auto_score,
+                },
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    def cao_fetch_feedback(
+        task_id: str = Field(description="Task identifier"),
+        terminal_id: str = Field(default="", description="Terminal ID to filter reports by"),
+    ) -> Dict[str, Any]:
+        """Fetch annotated human feedback for this terminal's reports.
+
+        Returns count and list of annotated reports with human_score and labels (tp/fp/uncertain).
+        """
+        try:
+            params: dict[str, str] = {"status": "annotated"}
+            if terminal_id:
+                params["terminal_id"] = terminal_id
+            r = _http.get(
+                f"{API_BASE_URL}/evolution/{task_id}/reports",
+                params=params,
+                timeout=10,
+            )
+            r.raise_for_status()
+            reports = r.json()
+            return {"count": len(reports), "reports": reports}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    def cao_list_reports(
+        task_id: str = Field(description="Task identifier"),
+        terminal_id: str = Field(default="", description="Filter by terminal ID"),
+        status: str = Field(default="", description="Filter by status: pending|annotated"),
+    ) -> Dict[str, Any]:
+        """List reports for a task, optionally filtered by terminal_id or status."""
+        try:
+            params: dict[str, str] = {}
+            if terminal_id:
+                params["terminal_id"] = terminal_id
+            if status:
+                params["status"] = status
+            r = _http.get(
+                f"{API_BASE_URL}/evolution/{task_id}/reports",
+                params=params,
+                timeout=10,
+            )
+            r.raise_for_status()
+            return {"reports": r.json()}
+        except Exception as e:
+            return {"error": str(e)}

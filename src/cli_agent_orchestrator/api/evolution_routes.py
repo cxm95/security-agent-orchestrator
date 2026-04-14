@@ -7,6 +7,7 @@ All routes prefixed with /evolution/.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,13 +31,28 @@ from cli_agent_orchestrator.evolution.attempts import (
     write_attempt,
 )
 from cli_agent_orchestrator.evolution.heartbeat import check_triggers
-from cli_agent_orchestrator.evolution.types import Attempt
+from cli_agent_orchestrator.evolution.types import Attempt, Finding, HumanLabel, Report
+from cli_agent_orchestrator.evolution.reports import (
+    list_reports,
+    read_report,
+    report_stats,
+    write_report,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/evolution", tags=["evolution"])
 
 EVOLUTION_DIR = str(Path.home() / ".cao-evolution")
+
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _validate_path_id(value: str, name: str = "id") -> str:
+    """Reject path traversal in URL path parameters."""
+    if not _SAFE_ID_RE.match(value):
+        raise HTTPException(400, f"Invalid {name}: must match [a-zA-Z0-9_-]+")
+    return value
 
 
 # ── Pydantic models ─────────────────────────────────────────────────────
@@ -88,6 +104,28 @@ class SkillCreate(BaseModel):
     content: str
     tags: list[str] = []
     agent_id: str = ""
+
+
+class FindingItem(BaseModel):
+    finding_id: str = ""
+    description: str
+    severity: str = "medium"
+    file_path: str = ""
+    line: int | None = None
+    category: str = ""
+
+
+class ReportSubmit(BaseModel):
+    agent_id: str
+    terminal_id: str = ""
+    findings: list[FindingItem]
+    auto_score: float | None = None
+
+
+class AnnotateBody(BaseModel):
+    human_score: float | None = None
+    labels: list[dict[str, Any]] = []  # [{finding_id, verdict, severity_override?, comment?}]
+    annotated_by: str = ""
 
 
 # ── Task management ─────────────────────────────────────────────────────
@@ -395,6 +433,124 @@ async def search_knowledge(
             })
 
     return results[:top_k]
+
+
+# ── Reports: human feedback ──────────────────────────────────────────────
+
+@router.post("/{task_id}/reports", status_code=201)
+async def submit_report(task_id: str, body: ReportSubmit) -> dict[str, Any]:
+    """Agent submits a vulnerability report → returns report_id."""
+    _validate_path_id(task_id, "task_id")
+    sd = shared_dir(EVOLUTION_DIR)
+    if not (sd / "tasks" / task_id).exists():
+        (sd / "tasks" / task_id).mkdir(parents=True, exist_ok=True)
+
+    report_id = uuid.uuid4().hex[:12]
+    findings = [
+        Finding(
+            finding_id=f.finding_id or f"f-{i}",
+            description=f.description,
+            severity=f.severity,
+            file_path=f.file_path,
+            line=f.line,
+            category=f.category,
+        )
+        for i, f in enumerate(body.findings)
+    ]
+    report = Report(
+        report_id=report_id,
+        task_id=task_id,
+        agent_id=body.agent_id,
+        terminal_id=body.terminal_id,
+        findings=findings,
+        auto_score=body.auto_score,
+        submitted_at=datetime.now(timezone.utc).isoformat(),
+    )
+    write_report(EVOLUTION_DIR, report)
+    checkpoint(EVOLUTION_DIR, body.agent_id, f"report {report_id} for {task_id}")
+    return {"report_id": report_id, "finding_count": len(findings)}
+
+
+@router.get("/{task_id}/reports")
+async def get_reports(
+    task_id: str,
+    terminal_id: str = Query("", description="Filter by terminal ID"),
+    status: str = Query("", description="Filter by status: pending|annotated"),
+) -> list[dict[str, Any]]:
+    """List reports for a task, optionally filtered by terminal_id / status."""
+    _validate_path_id(task_id, "task_id")
+    reports = list_reports(
+        EVOLUTION_DIR,
+        task_id=task_id,
+        terminal_id=terminal_id or None,
+        status=status or None,
+    )
+    return [r.to_dict() for r in reports]
+
+
+@router.put("/{task_id}/reports/{report_id}/annotate")
+async def annotate_report(task_id: str, report_id: str, body: AnnotateBody) -> dict[str, str]:
+    """Human annotates a report with labels (tp/fp/uncertain per finding)."""
+    _validate_path_id(task_id, "task_id")
+    _validate_path_id(report_id, "report_id")
+    report = read_report(EVOLUTION_DIR, task_id, report_id)
+    if report is None:
+        raise HTTPException(404, f"Report '{report_id}' not found")
+
+    report.human_score = body.human_score
+    report.human_labels = [
+        HumanLabel(
+            finding_id=lb.get("finding_id", ""),
+            verdict=lb.get("verdict", "uncertain"),
+            severity_override=lb.get("severity_override"),
+            comment=lb.get("comment", ""),
+            annotated_by=body.annotated_by,
+        )
+        for lb in body.labels
+    ]
+    report.status = "annotated"
+    report.annotated_at = datetime.now(timezone.utc).isoformat()
+    write_report(EVOLUTION_DIR, report)
+
+    # Write .result file for heartbeat/grader consumption
+    import json as _json
+    result_data = {
+        "report_id": report_id,
+        "human_score": report.human_score,
+        "human_labels": [l.to_dict() for l in report.human_labels],
+        "annotated_at": report.annotated_at,
+    }
+    result_dir = shared_dir(EVOLUTION_DIR) / "reports" / task_id
+    result_dir.mkdir(parents=True, exist_ok=True)
+    (result_dir / f"{report_id}.result").write_text(_json.dumps(result_data, indent=2))
+
+    checkpoint(EVOLUTION_DIR, "human", f"annotate report {report_id}")
+    return {"status": "annotated", "report_id": report_id}
+
+
+@router.get("/{task_id}/reports/stats")
+async def get_report_stats(task_id: str) -> dict[str, Any]:
+    """Aggregate stats for reports of a task."""
+    _validate_path_id(task_id, "task_id")
+    return report_stats(EVOLUTION_DIR, task_id=task_id)
+
+
+@router.get("/{task_id}/reports/{report_id}/result")
+async def get_report_result(task_id: str, report_id: str) -> dict[str, Any]:
+    """Get a single report's annotation result (for .result file generation)."""
+    _validate_path_id(task_id, "task_id")
+    _validate_path_id(report_id, "report_id")
+    report = read_report(EVOLUTION_DIR, task_id, report_id)
+    if report is None:
+        raise HTTPException(404, f"Report '{report_id}' not found")
+    if report.status != "annotated":
+        raise HTTPException(404, f"Report '{report_id}' not yet annotated")
+    return {
+        "report_id": report_id,
+        "human_score": report.human_score,
+        "human_labels": [l.to_dict() for l in report.human_labels],
+        "annotated_at": report.annotated_at,
+    }
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import pytest
 from cli_agent_orchestrator.evolution.grader_base import (
     GraderBase,
     load_grader_from_source,
+    feedback_stats,
 )
 
 
@@ -231,3 +232,220 @@ class Grader(GraderBase):
         lb = r.json()
         assert len(lb["entries"]) == 1
         assert lb["entries"][0]["score"] == pytest.approx(0.7)
+
+
+# ── MCP report tools registration test ──────────────────────────────────
+
+class TestReportMCPTools:
+    def test_report_tools_registered(self):
+        """Verify report MCP tools register and have correct names."""
+        import asyncio
+        from fastmcp import FastMCP
+        from cli_agent_orchestrator.mcp_server.evolution_tools import register_evolution_tools
+        mcp = FastMCP("test-report-tools")
+        register_evolution_tools(mcp)
+        tools = asyncio.run(mcp.list_tools())
+        tool_names = {t.name for t in tools}
+        assert "cao_submit_report" in tool_names
+        assert "cao_fetch_feedback" in tool_names
+        assert "cao_list_reports" in tool_names
+
+
+# ── has_pending_feedback test ────────────────────────────────────────────
+
+class TestHasPendingFeedback:
+    def test_no_dir(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_pending_feedback
+        assert has_pending_feedback(tmp_path / "nope") is False
+
+    def test_no_reports(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_pending_feedback
+        assert has_pending_feedback(tmp_path) is False
+
+    def test_report_without_result(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_pending_feedback
+        (tmp_path / "r-1.report").write_text("{}")
+        assert has_pending_feedback(tmp_path) is True
+
+    def test_report_with_result(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_pending_feedback
+        (tmp_path / "r-1.report").write_text("{}")
+        (tmp_path / "r-1.result").write_text("{}")
+        assert has_pending_feedback(tmp_path) is False
+
+    def test_mixed(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_pending_feedback
+        (tmp_path / "r-1.report").write_text("{}")
+        (tmp_path / "r-1.result").write_text("{}")
+        (tmp_path / "r-2.report").write_text("{}")
+        # r-2 has no .result → pending
+        assert has_pending_feedback(tmp_path) is True
+
+
+class TestHasNewFeedback:
+    def test_no_dir(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_new_feedback
+        assert has_new_feedback(tmp_path / "nope") is False
+
+    def test_no_results(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_new_feedback
+        (tmp_path / "r-1.report").write_text("{}")
+        assert has_new_feedback(tmp_path) is False
+
+    def test_result_without_consumed(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_new_feedback
+        (tmp_path / "r-1.result").write_text("{}")
+        assert has_new_feedback(tmp_path) is True
+
+    def test_result_with_consumed(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_new_feedback, mark_feedback_consumed
+        (tmp_path / "r-1.result").write_text("{}")
+        mark_feedback_consumed(tmp_path, "r-1")
+        assert has_new_feedback(tmp_path) is False
+
+    def test_mixed_consumed(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import has_new_feedback, mark_feedback_consumed
+        (tmp_path / "r-1.result").write_text("{}")
+        (tmp_path / "r-2.result").write_text("{}")
+        mark_feedback_consumed(tmp_path, "r-1")
+        # r-2 not consumed yet
+        assert has_new_feedback(tmp_path) is True
+
+
+class TestCheckTriggersWithFeedback:
+    def test_feedback_reflect_triggered(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import check_triggers
+        evo_dir = str(tmp_path / "evo")
+        reports_dir = tmp_path / "reports"
+        reports_dir.mkdir()
+        (reports_dir / "r-1.result").write_text("{}")
+
+        results = check_triggers(
+            evo_dir=evo_dir,
+            agent_id="agent-x",
+            task_id="task-1",
+            local_eval_count=0,
+            reports_dir=str(reports_dir),
+        )
+        names = [r["name"] for r in results]
+        assert "feedback_reflect" in names
+
+    def test_no_feedback_reflect_when_consumed(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import check_triggers, mark_feedback_consumed
+        evo_dir = str(tmp_path / "evo")
+        reports_dir = tmp_path / "reports"
+        reports_dir.mkdir()
+        (reports_dir / "r-1.result").write_text("{}")
+        mark_feedback_consumed(reports_dir, "r-1")
+
+        results = check_triggers(
+            evo_dir=evo_dir,
+            agent_id="agent-x",
+            task_id="task-1",
+            local_eval_count=0,
+            reports_dir=str(reports_dir),
+        )
+        names = [r["name"] for r in results]
+        assert "feedback_reflect" not in names
+
+    def test_no_feedback_reflect_without_reports_dir(self, tmp_path):
+        from cli_agent_orchestrator.evolution.heartbeat import check_triggers
+        evo_dir = str(tmp_path / "evo")
+
+        results = check_triggers(
+            evo_dir=evo_dir,
+            agent_id="agent-x",
+            task_id="task-1",
+            local_eval_count=0,
+        )
+        names = [r["name"] for r in results]
+        assert "feedback_reflect" not in names
+
+
+# ── feedback_stats + grade_with_feedback tests ─────────────────────────
+
+class TestFeedbackStats:
+    def test_empty_dir(self, tmp_path):
+        s = feedback_stats(tmp_path)
+        assert s == {"annotated": 0, "tp": 0, "fp": 0, "uncertain": 0, "precision": None}
+
+    def test_nonexistent_dir(self, tmp_path):
+        s = feedback_stats(tmp_path / "nope")
+        assert s["annotated"] == 0
+
+    def test_single_result_tp(self, tmp_path):
+        import json
+        (tmp_path / "r-1.result").write_text(json.dumps({"human_labels": [
+            {"finding_id": "f-0", "verdict": "tp"},
+            {"finding_id": "f-1", "verdict": "tp"},
+        ]}))
+        s = feedback_stats(tmp_path)
+        assert s["annotated"] == 1
+        assert s["tp"] == 2
+        assert s["fp"] == 0
+        assert s["precision"] == 1.0
+
+    def test_mixed_verdicts(self, tmp_path):
+        import json
+        (tmp_path / "r-1.result").write_text(json.dumps({"human_labels": [
+            {"finding_id": "f-0", "verdict": "tp"},
+            {"finding_id": "f-1", "verdict": "fp"},
+        ]}))
+        (tmp_path / "r-2.result").write_text(json.dumps({"human_labels": [
+            {"finding_id": "f-0", "verdict": "fp"},
+        ]}))
+        s = feedback_stats(tmp_path)
+        assert s["annotated"] == 2
+        assert s["tp"] == 1
+        assert s["fp"] == 2
+        assert abs(s["precision"] - 1/3) < 1e-9
+
+    def test_list_format(self, tmp_path):
+        """Result file can be a bare list of labels."""
+        import json
+        (tmp_path / "r-1.result").write_text(json.dumps([
+            {"finding_id": "f-0", "verdict": "tp"},
+        ]))
+        s = feedback_stats(tmp_path)
+        assert s["tp"] == 1
+
+
+class TestGradeWithFeedback:
+    def test_without_reports_dir(self):
+        class G(GraderBase):
+            def evaluate(self, result):
+                return 0.8
+
+        g = G()
+        score, feedback, detail = g.grade_with_feedback({"x": 1})
+        assert score == 0.8
+        assert detail == {}
+
+    def test_with_empty_reports_dir(self, tmp_path):
+        class G(GraderBase):
+            def evaluate(self, result):
+                return 0.8
+
+        g = G()
+        score, feedback, detail = g.grade_with_feedback({"x": 1}, reports_dir=tmp_path)
+        assert score == 0.8
+        assert detail == {}
+
+    def test_blends_human_precision(self, tmp_path):
+        import json
+        (tmp_path / "r-1.result").write_text(json.dumps({"human_labels": [
+            {"finding_id": "f-0", "verdict": "tp"},
+            {"finding_id": "f-1", "verdict": "fp"},
+        ]}))
+
+        class G(GraderBase):
+            def evaluate(self, result):
+                return 1.0
+
+        g = G()
+        score, feedback, detail = g.grade_with_feedback({}, reports_dir=tmp_path)
+        # 70% * 1.0 + 30% * 0.5 = 0.85
+        assert abs(score - 0.85) < 1e-9
+        assert "human_precision" in detail
+        assert detail["raw_score"] == 1.0
+        assert "blended" in feedback

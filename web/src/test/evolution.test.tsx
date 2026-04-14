@@ -11,6 +11,9 @@ vi.mock('../api', () => ({
     listNotes: vi.fn(),
     listSkills: vi.fn(),
     searchKnowledge: vi.fn(),
+    listReports: vi.fn(),
+    getReportStats: vi.fn(),
+    annotateReport: vi.fn(),
   },
   // Re-export types (they're just interfaces, no runtime value)
   EvolutionTask: undefined,
@@ -48,6 +51,50 @@ const mockSkills = [
   { name: 'entry-scan', meta: { tags: 'scanning' }, content: 'Skill content' },
 ]
 
+const mockReports = [
+  {
+    report_id: 'rpt-001',
+    task_id: 'task-1',
+    agent_id: 'agent-a',
+    terminal_id: 'term-1',
+    findings: [
+      { finding_id: 'f-0', description: 'SQL injection in login.py', severity: 'high', file_path: 'login.py', line: 42, category: 'injection' },
+      { finding_id: 'f-1', description: 'XSS in template', severity: 'medium', file_path: 'template.html', line: 10, category: 'xss' },
+    ],
+    auto_score: 0.7,
+    human_score: null,
+    human_labels: [],
+    status: 'pending',
+    submitted_at: '2025-01-01T12:00:00Z',
+    annotated_at: null,
+  },
+  {
+    report_id: 'rpt-002',
+    task_id: 'task-1',
+    agent_id: 'agent-b',
+    terminal_id: 'term-2',
+    findings: [
+      { finding_id: 'f-0', description: 'Open redirect', severity: 'medium', file_path: 'redirect.py', line: 5, category: 'redirect' },
+    ],
+    auto_score: 0.5,
+    human_score: 0.8,
+    human_labels: [{ finding_id: 'f-0', verdict: 'tp', comment: 'Confirmed', annotated_by: 'user1' }],
+    status: 'annotated',
+    submitted_at: '2025-01-01T11:00:00Z',
+    annotated_at: '2025-01-01T13:00:00Z',
+  },
+]
+
+const mockStats = {
+  total: 2,
+  pending: 1,
+  annotated: 1,
+  tp: 1,
+  fp: 0,
+  uncertain: 0,
+  precision: 1.0,
+}
+
 describe('EvolutionPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -57,6 +104,9 @@ describe('EvolutionPanel', () => {
     ;(api.listNotes as any).mockResolvedValue(mockNotes)
     ;(api.listSkills as any).mockResolvedValue(mockSkills)
     ;(api.searchKnowledge as any).mockResolvedValue([])
+    ;(api.listReports as any).mockResolvedValue(mockReports)
+    ;(api.getReportStats as any).mockResolvedValue(mockStats)
+    ;(api.annotateReport as any).mockResolvedValue({ status: 'annotated', report_id: 'rpt-001' })
   })
 
   it('renders loading state then content', async () => {
@@ -74,11 +124,12 @@ describe('EvolutionPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('Evolution')).toBeInTheDocument()
     })
-    // Task selector should contain both tasks
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.options.length).toBe(2)
-    expect(select.options[0].text).toContain('Scan Task')
-    expect(select.options[1].text).toContain('Audit Task')
+    // Task selector should contain both tasks — find by the select with task options
+    const selects = screen.getAllByRole('combobox') as HTMLSelectElement[]
+    const taskSelect = selects.find(s => Array.from(s.options).some(o => o.text.includes('Scan Task')))!
+    expect(taskSelect).toBeTruthy()
+    expect(Array.from(taskSelect.options).some(o => o.text.includes('Scan Task'))).toBe(true)
+    expect(Array.from(taskSelect.options).some(o => o.text.includes('Audit Task'))).toBe(true)
   })
 
   it('shows leaderboard with scores', async () => {
@@ -194,6 +245,79 @@ describe('EvolutionPanel', () => {
     fireEvent.click(screen.getByTitle('Refresh'))
     await waitFor(() => {
       expect(api.listTasks).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // ── Reports & Feedback tests ───────────────────────────────────────
+
+  it('shows Reports & Feedback section', async () => {
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('Reports & Feedback')).toBeInTheDocument()
+    })
+  })
+
+  it('displays report stats', async () => {
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('Total: 2')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Pending: 1')).toBeInTheDocument()
+    expect(screen.getByText('Annotated: 1')).toBeInTheDocument()
+    expect(screen.getByText('TP: 1')).toBeInTheDocument()
+    expect(screen.getByText('FP: 0')).toBeInTheDocument()
+  })
+
+  it('shows report entries with agent and status', async () => {
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('rpt-001')).toBeInTheDocument()
+    })
+    expect(screen.getByText('rpt-002')).toBeInTheDocument()
+    expect(screen.getByText('by agent-a')).toBeInTheDocument()
+    expect(screen.getByText('by agent-b')).toBeInTheDocument()
+  })
+
+  it('expands report to show findings', async () => {
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('rpt-001')).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('rpt-001'))
+    await waitFor(() => {
+      expect(screen.getByText('SQL injection in login.py')).toBeInTheDocument()
+      expect(screen.getByText('XSS in template')).toBeInTheDocument()
+    })
+  })
+
+  it('shows annotate button on expanded report', async () => {
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('rpt-001')).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('rpt-001'))
+    await waitFor(() => {
+      expect(screen.getByText('Annotate')).toBeInTheDocument()
+    })
+  })
+
+  it('shows verdict labels for annotated report', async () => {
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('rpt-002')).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('rpt-002'))
+    await waitFor(() => {
+      expect(screen.getByText('TP')).toBeInTheDocument()
+    })
+  })
+
+  it('handles empty reports state', async () => {
+    ;(api.listReports as any).mockResolvedValue([])
+    ;(api.getReportStats as any).mockResolvedValue({ total: 0, pending: 0, annotated: 0, tp: 0, fp: 0, uncertain: 0, precision: null })
+    render(<EvolutionPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('No reports yet.')).toBeInTheDocument()
     })
   })
 })

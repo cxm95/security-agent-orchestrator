@@ -27,6 +27,7 @@ DEFAULT_PROMPTS = {
     "reflect": _load_prompt("reflect"),
     "consolidate": _load_prompt("consolidate"),
     "pivot": _load_prompt("pivot"),
+    "feedback_reflect": _load_prompt("feedback_reflect"),
 }
 
 
@@ -149,11 +150,13 @@ def check_triggers(
     global_eval_count: int = 0,
     evals_since_improvement: int = 0,
     leaderboard: str = "",
+    reports_dir: str | Path | None = None,
 ) -> list[dict]:
     """Check heartbeat triggers and return rendered prompts to send.
 
     Called by submit_score after processing an attempt.
     Returns list of {"name": str, "prompt": str} for each triggered action.
+    If reports_dir is provided and has new .result files, a feedback_reflect action is injected.
     """
     runner = build_runner(evo_dir, agent_id)
     triggered = runner.check(
@@ -166,4 +169,48 @@ def check_triggers(
         prompt = render_prompt(action, agent_id, task_id, leaderboard)
         results.append({"name": action.name, "prompt": prompt})
         logger.info(f"Heartbeat triggered: {action.name} for agent={agent_id} task={task_id}")
+
+    # Inject feedback_reflect if there are new .result files
+    if reports_dir and has_new_feedback(reports_dir):
+        prompt = DEFAULT_PROMPTS.get("feedback_reflect", "")
+        prompt = (prompt
+                  .replace("{task_id}", task_id)
+                  .replace("{agent_id}", agent_id))
+        results.append({"name": "feedback_reflect", "prompt": prompt})
+        logger.info(f"Heartbeat triggered: feedback_reflect for agent={agent_id} task={task_id}")
+
     return results
+
+
+def has_pending_feedback(reports_dir: str | Path) -> bool:
+    """Check if there are .report files without corresponding .result files.
+
+    Used by heartbeat to decide if a feedback-reflect should be triggered.
+    """
+    rdir = Path(reports_dir)
+    if not rdir.exists():
+        return False
+    report_ids = {f.stem for f in rdir.glob("*.report")}
+    result_ids = {f.stem for f in rdir.glob("*.result")}
+    return bool(report_ids - result_ids)
+
+
+def has_new_feedback(reports_dir: str | Path) -> bool:
+    """Check if there are .result files not yet consumed (no .consumed marker).
+
+    A .result file means human annotation arrived. After the agent processes it,
+    we write a .consumed marker so we don't re-trigger feedback_reflect.
+    """
+    rdir = Path(reports_dir)
+    if not rdir.exists():
+        return False
+    result_ids = {f.stem for f in rdir.glob("*.result")}
+    consumed_ids = {f.stem for f in rdir.glob("*.consumed")}
+    return bool(result_ids - consumed_ids)
+
+
+def mark_feedback_consumed(reports_dir: str | Path, report_id: str) -> None:
+    """Mark a .result file as consumed so feedback_reflect won't re-trigger."""
+    rdir = Path(reports_dir)
+    rdir.mkdir(parents=True, exist_ok=True)
+    (rdir / f"{report_id}.consumed").write_text("")

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { api, EvolutionTask, EvolutionAttempt, EvolutionNote, EvolutionSkill } from '../api'
-import { TrendingUp, Trophy, BookOpen, Wrench, Search, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
+import { api, EvolutionTask, EvolutionAttempt, EvolutionNote, EvolutionSkill, Report, ReportStats } from '../api'
+import { TrendingUp, Trophy, BookOpen, Wrench, Search, RefreshCw, ChevronDown, ChevronRight, FileWarning, CheckCircle, XCircle, HelpCircle } from 'lucide-react'
 
 // ── Score Chart (pure CSS, no Chart.js dependency) ─────────────────────
 
@@ -188,6 +188,192 @@ function KnowledgeBrowser({ notes, skills }: { notes: EvolutionNote[]; skills: E
   )
 }
 
+// ── Reports Panel (Human Feedback) ──────────────────────────────────────
+
+function VerdictIcon({ verdict }: { verdict: string }) {
+  if (verdict === 'tp') return <CheckCircle size={14} className="text-emerald-400" />
+  if (verdict === 'fp') return <XCircle size={14} className="text-red-400" />
+  return <HelpCircle size={14} className="text-yellow-400" />
+}
+
+function ReportsPanel({ taskId }: { taskId: string }) {
+  const [reports, setReports] = useState<Report[]>([])
+  const [stats, setStats] = useState<ReportStats | null>(null)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [expandedReport, setExpandedReport] = useState<string | null>(null)
+  const [annotating, setAnnotating] = useState<string | null>(null)
+  const [verdicts, setVerdicts] = useState<Record<string, string>>({})
+
+  const loadReports = async () => {
+    try {
+      const [r, s] = await Promise.all([
+        api.listReports(taskId, '', statusFilter),
+        api.getReportStats(taskId),
+      ])
+      setReports(r)
+      setStats(s)
+    } catch (e) {
+      console.error('Failed to load reports:', e)
+    }
+  }
+
+  useEffect(() => { loadReports() }, [taskId, statusFilter])
+
+  const startAnnotate = (report: Report) => {
+    setAnnotating(report.report_id)
+    const initial: Record<string, string> = {}
+    report.findings.forEach(f => { initial[f.finding_id] = 'uncertain' })
+    report.human_labels?.forEach(l => { initial[l.finding_id] = l.verdict })
+    setVerdicts(initial)
+  }
+
+  const submitAnnotation = async (reportId: string) => {
+    const labels = Object.entries(verdicts).map(([fid, v]) => ({
+      finding_id: fid, verdict: v,
+    }))
+    try {
+      await api.annotateReport(taskId, reportId, { labels, annotated_by: 'webui' })
+      setAnnotating(null)
+      loadReports()
+    } catch (e) {
+      console.error('Annotation failed:', e)
+    }
+  }
+
+  const severityColor: Record<string, string> = {
+    critical: 'text-red-400',
+    high: 'text-orange-400',
+    medium: 'text-yellow-400',
+    low: 'text-blue-400',
+    info: 'text-gray-400',
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Stats bar */}
+      {stats && (
+        <div className="flex items-center gap-4 text-xs text-gray-400">
+          <span>Total: {stats.total}</span>
+          <span className="text-yellow-400">Pending: {stats.pending}</span>
+          <span className="text-emerald-400">Annotated: {stats.annotated}</span>
+          {stats.precision !== null && (
+            <span>Precision: {(stats.precision * 100).toFixed(1)}%</span>
+          )}
+          <span className="text-emerald-400">TP: {stats.tp}</span>
+          <span className="text-red-400">FP: {stats.fp}</span>
+        </div>
+      )}
+
+      {/* Filter */}
+      <div className="flex items-center gap-2">
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white"
+        >
+          <option value="">All status</option>
+          <option value="pending">Pending</option>
+          <option value="annotated">Annotated</option>
+        </select>
+        <button onClick={loadReports} className="text-gray-400 hover:text-white text-xs">
+          <RefreshCw size={12} />
+        </button>
+      </div>
+
+      {/* Report list */}
+      {reports.length === 0 && <p className="text-gray-600 text-sm">No reports yet.</p>}
+      {reports.map(r => (
+        <div key={r.report_id} className="border border-gray-800 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setExpandedReport(expandedReport === r.report_id ? null : r.report_id)}
+            className="w-full text-left flex items-center gap-2 px-3 py-2 bg-gray-800/50 hover:bg-gray-800 text-sm"
+          >
+            {expandedReport === r.report_id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <FileWarning size={14} className="text-yellow-400" />
+            <span className="text-white font-mono text-xs">{r.report_id}</span>
+            <span className="text-gray-400">by {r.agent_id}</span>
+            <span className="text-gray-500 text-xs">{r.findings.length} findings</span>
+            <span className={`ml-auto px-2 py-0.5 rounded text-xs ${
+              r.status === 'annotated' ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-800' :
+              'bg-yellow-900/50 text-yellow-400 border border-yellow-800'
+            }`}>{r.status}</span>
+          </button>
+
+          {expandedReport === r.report_id && (
+            <div className="px-3 py-2 space-y-2 bg-gray-900/50">
+              {/* Findings table */}
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-500 border-b border-gray-800">
+                    <th className="text-left py-1 pr-2">ID</th>
+                    <th className="text-left py-1 pr-2">Description</th>
+                    <th className="text-left py-1 pr-2">Severity</th>
+                    <th className="text-left py-1 pr-2">File</th>
+                    {annotating === r.report_id && <th className="text-left py-1">Verdict</th>}
+                    {r.status === 'annotated' && annotating !== r.report_id && <th className="text-left py-1">Label</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {r.findings.map(f => {
+                    const label = r.human_labels?.find(l => l.finding_id === f.finding_id)
+                    return (
+                      <tr key={f.finding_id} className="border-b border-gray-800/50">
+                        <td className="py-1 pr-2 text-gray-400 font-mono">{f.finding_id}</td>
+                        <td className="py-1 pr-2 text-gray-300 max-w-[300px] truncate">{f.description}</td>
+                        <td className={`py-1 pr-2 ${severityColor[f.severity] || 'text-gray-400'}`}>{f.severity}</td>
+                        <td className="py-1 pr-2 text-gray-500 font-mono">{f.file_path}{f.line ? `:${f.line}` : ''}</td>
+                        {annotating === r.report_id && (
+                          <td className="py-1">
+                            <select
+                              value={verdicts[f.finding_id] || 'uncertain'}
+                              onChange={e => setVerdicts({ ...verdicts, [f.finding_id]: e.target.value })}
+                              className="bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-xs text-white"
+                            >
+                              <option value="tp">TP</option>
+                              <option value="fp">FP</option>
+                              <option value="uncertain">Uncertain</option>
+                            </select>
+                          </td>
+                        )}
+                        {r.status === 'annotated' && annotating !== r.report_id && (
+                          <td className="py-1 flex items-center gap-1">
+                            {label ? <><VerdictIcon verdict={label.verdict} /> <span className="text-gray-300">{label.verdict.toUpperCase()}</span></> : '—'}
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+
+              {/* Action buttons */}
+              <div className="flex gap-2 pt-1">
+                {annotating === r.report_id ? (
+                  <>
+                    <button
+                      onClick={() => submitAnnotation(r.report_id)}
+                      className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs"
+                    >Save Labels</button>
+                    <button
+                      onClick={() => setAnnotating(null)}
+                      className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white text-xs"
+                    >Cancel</button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => startAnnotate(r)}
+                    className="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs"
+                  >Annotate</button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────
 
 export function EvolutionPanel() {
@@ -311,6 +497,16 @@ export function EvolutionPanel() {
             <Trophy size={14} className="text-yellow-400" /> Leaderboard
           </h3>
           <Leaderboard attempts={leaderboard} />
+        </div>
+      )}
+
+      {/* Reports / Human Feedback */}
+      {selectedTask && (
+        <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
+            <FileWarning size={14} className="text-yellow-400" /> Reports &amp; Feedback
+          </h3>
+          <ReportsPanel taskId={selectedTask} />
         </div>
       )}
 

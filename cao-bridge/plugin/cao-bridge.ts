@@ -16,6 +16,7 @@
  *   CAO_POLL_INTERVAL    — Polling interval in ms (default: 5000)
  *   CAO_DEBUG            — "1" to enable file-based debug logging
  *   CAO_HEARTBEAT_ENABLED — "1" to auto-inject heartbeat prompts (default: "0")
+ *   CAO_FEEDBACK_ENABLED  — "1" to auto-fetch human feedback on idle (default: "0")
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -29,6 +30,7 @@ export default (async ({ client }) => {
   const POLL_MS = parseInt(process.env.CAO_POLL_INTERVAL || "5000", 10)
   const DEBUG = process.env.CAO_DEBUG === "1"
   const HEARTBEAT = process.env.CAO_HEARTBEAT_ENABLED === "1"
+  const FEEDBACK = process.env.CAO_FEEDBACK_ENABLED === "1"
 
   let terminalId: string | null = process.env.CAO_TERMINAL_ID || null
   let awaitingResult = false
@@ -99,6 +101,26 @@ export default (async ({ client }) => {
     await client.tui.submitPrompt()
   }
 
+  async function fetchFeedback(taskId: string): Promise<string | null> {
+    if (!FEEDBACK || !terminalId) return null
+    try {
+      const data = await hub(
+        "/evolution/" + taskId + "/reports?terminal_id=" + terminalId + "&status=annotated"
+      )
+      if (!Array.isArray(data) || data.length === 0) return null
+      const lines = data.map((r: any) => {
+        const tp = (r.human_labels || []).filter((l: any) => l.verdict === "tp").length
+        const fp = (r.human_labels || []).filter((l: any) => l.verdict === "fp").length
+        return `Report ${r.report_id}: human_score=${r.human_score ?? "?"}, tp=${tp}, fp=${fp}`
+      })
+      dbg("feedback fetched: " + data.length + " reports")
+      return `[Human Feedback — ${data.length} reports annotated]\n` + lines.join("\n") +
+        "\nReview the feedback and adjust your scanning strategy accordingly."
+    } catch {
+      return null
+    }
+  }
+
   async function pollAndInject() {
     if (!terminalId || awaitingResult) return
     try {
@@ -165,6 +187,11 @@ export default (async ({ client }) => {
             }
           } catch (e) {
             dbg("score report failed: " + e)
+          }
+          // Fetch human feedback and inject as context
+          const feedbackMsg = await fetchFeedback(currentTaskId)
+          if (feedbackMsg) {
+            pendingHeartbeats.unshift({ name: "human-feedback", prompt: feedbackMsg })
           }
         }
 
