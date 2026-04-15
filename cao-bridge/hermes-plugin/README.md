@@ -1,10 +1,11 @@
 # CAO Hermes Plugin
 
 Integrates Hermes Agent into the CAO co-evolution framework. Uses the same
-`CaoBridge` class as all other agents — data flows through:
+`CaoBridge` class + `git_sync` module as all other agents — data flows through:
 
 ```
-CaoBridge → HTTP API → Hub writes files → git checkpoint → git push/pull
+上行: CaoBridge → HTTP API → Hub writes files → git commit → git push
+下行: git_sync → git clone/pull ~/.cao-evolution-client/ → pull skills to ~/.hermes/skills/
 ```
 
 ## Quick Start
@@ -14,6 +15,9 @@ CaoBridge → HTTP API → Hub writes files → git checkpoint → git push/pull
 ```bash
 # Copy plugin to hermes plugins directory
 cp -r cao-bridge/hermes-plugin ~/.hermes/plugins/cao-evolution
+
+# Set git remote (required for sync)
+export CAO_GIT_REMOTE="git@github.com:org/evolution.git"  # or file:///path/to/.cao-evolution
 
 # Add to ~/.hermes/config.yaml:
 plugins:
@@ -34,16 +38,20 @@ mcp:
     environment:
       CAO_HUB_URL: "http://127.0.0.1:9889"
       CAO_AGENT_PROFILE: "remote-hermes"
+      CAO_GIT_REMOTE: "git@github.com:org/evolution.git"
 
 skills:
   external_dirs:
-    - /path/to/cao-bridge/skill           # loads SKILL.md protocol
-    - ~/.cao-evolution/skills  # shared skill pool
+    - /path/to/cao-bridge/skill                 # loads SKILL.md protocol
+    - ~/.cao-evolution-client/skills             # shared skill pool (git clone)
 ```
 
 ### Option C: Sync script fallback (no Plugin, no MCP)
 
 ```bash
+# Set git remote
+export CAO_GIT_REMOTE="git@github.com:org/evolution.git"
+
 # One-shot sync
 ./hermes-sync.sh
 
@@ -55,10 +63,10 @@ watch -n 60 ./hermes-sync.sh
 
 | Component | What | Automated? |
 |-----------|------|-----------|
-| **MCP** (`cao_bridge_mcp.py`) | 9 tools for hermes LLM to call | Agent-driven |
+| **MCP** (`cao_bridge_mcp.py`) | 11 tools for hermes LLM (incl. cao_sync, cao_pull_skills) | Agent-driven |
 | **SKILL** (`SKILL.md` via `external_dirs`) | Protocol instructions | Passive |
-| **Plugin** (`cao-evolution`) | Auto register/push/heartbeat | Lifecycle hooks |
-| **Sync script** (`hermes-sync.sh`) | Push skills+memory | Cron/manual |
+| **Plugin** (`cao-evolution`) | Auto git sync/register/push/heartbeat | Lifecycle hooks |
+| **Sync script** (`hermes-sync.sh`) | Git sync + push skills+memory | Cron/manual |
 
 ## Plugin Settings
 
@@ -75,14 +83,18 @@ watch -n 60 ./hermes-sync.sh
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `CAO_GIT_REMOTE` | _(required)_ | Git remote URL of Hub's evolution repo |
+| `CAO_CLIENT_DIR` | `~/.cao-evolution-client` | Agent-side clone path |
 | `HERMES_SKILLS_DIR` | `~/.hermes/skills` | Override hermes skills directory |
 | `HERMES_MEMORY_PATH` | `~/.hermes/memories/MEMORY.md` | Override memory file path |
 | `CAO_HUB_URL` | `http://127.0.0.1:9889` | Used by sync script |
 
 ## Data Flow
 
-- **Out** (session end): hermes skills → `bridge.share_skill()` → Hub files → git
-- **Out** (session end): MEMORY.md § entries → `bridge.share_note()` → Hub files → git
-- **In** (session start): `bridge.search_knowledge()` → inject context
-- **In** (external_dirs): shared skills → hermes reads as read-only
-- **Heartbeat**: `bridge.poll()` → inject into next turn
+- **Out** (session end): hermes skills → write to `~/.cao-evolution-client/skills/` → `git_push()`
+- **Out** (session end): MEMORY.md § entries → write to `~/.cao-evolution-client/notes/` → `git_push()`
+- **In** (session start): `git_sync.init_client_repo()` → clone/pull `~/.cao-evolution-client/`
+- **In** (session start): `_pull_skills_from_clone()` → copy skills to `~/.hermes/skills/`
+- **In** (session start): `bridge.search_knowledge()` → inject context as session prompt
+- **In** (session end): `git_sync.pull()` → refresh clone with our writes + others' changes
+- **Heartbeat**: `report_score()` response → pending_heartbeats → inject into next turn

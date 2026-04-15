@@ -2,11 +2,12 @@
 
 Reuses the same CaoBridge class as the MCP server and other agent plugins,
 ensuring hermes data flows through the identical path:
-  CaoBridge → HTTP API → Hub writes files → git checkpoint → git push/pull
+  Agent writes files locally → git push → Hub git pull → BM25 reindex
+  Agent-side: git pull from shared repo → ~/.cao-evolution-client/
 
 Hooks:
-  on_session_start — register + inject shared knowledge
-  on_session_end   — push hermes skills + MEMORY.md entries to shared pool
+  on_session_start — git pull + register + inject shared knowledge + pull skills
+  on_session_end   — write hermes skills + MEMORY.md to local git, push, pull
   pre_llm_call     — inject heartbeat prompt if pending
 """
 
@@ -17,9 +18,10 @@ import os
 import sys
 from pathlib import Path
 
-# CaoBridge lives one directory up (cao-bridge/)
+# CaoBridge and git_sync live one directory up (cao-bridge/)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cao_bridge import CaoBridge  # noqa: E402
+from git_sync import init_client_repo, pull, push as git_push, skills_dir as client_skills_dir, notes_dir as client_notes_dir  # noqa: E402
 
 from .memory_parser import parse_memory  # noqa: E402
 
@@ -42,7 +44,18 @@ def register(ctx):
     pending_heartbeats: list[str] = []
 
     def on_start(session):
-        """Register with Hub and inject shared knowledge as context."""
+        """Git pull → register → inject shared knowledge → pull skills to local."""
+        # 1. Git sync — clone or pull latest evolution data
+        try:
+            init_client_repo()
+            logger.info("Git sync: pulled latest evolution data")
+        except Exception:
+            logger.warning("Git sync failed (will use HTTP fallback for knowledge)", exc_info=True)
+
+        # 2. Pull shared skills into hermes local dir
+        _pull_skills_from_clone()
+
+        # 3. Register with Hub
         try:
             bridge.register()
             logger.info("Registered with CAO Hub: %s", bridge.terminal_id)
@@ -50,6 +63,7 @@ def register(ctx):
             logger.warning("Failed to register with CAO Hub", exc_info=True)
             return None
 
+        # 4. Inject shared knowledge as context
         try:
             results = bridge.search_knowledge(query="", tags="", top_k=5)
             if results:
@@ -74,16 +88,37 @@ def register(ctx):
         if ctx.settings.get("push_memory", True):
             pushed_memory = _push_memory(bridge)
 
+        # Git push local writes to Hub
+        if pushed_skills + pushed_memory > 0:
+            git_push(message=f"hermes sync: {pushed_skills} skills, {pushed_memory} notes")
+
+        # Trigger grader skill if a task context is available
+        task_id = ctx.settings.get("task_id", "hermes-sync")
+        if task_id != "hermes-sync":
+            try:
+                task_info = bridge.get_task(task_id)
+                grader_skill = (task_info or {}).get("grader_skill", "")
+                if grader_skill:
+                    # Queue grader prompt for next pre_llm injection
+                    grader_prompt = (
+                        f"Grade this session's output using evo-skills/{grader_skill}/SKILL.md.\n"
+                        f"Task: {task_id}\n"
+                        f"After evaluation, print: CAO_SCORE=<float between 0.0 and 1.0>\n"
+                    )
+                    pending_heartbeats.insert(0, grader_prompt)
+                    logger.info("Queued grader skill prompt for task %s", task_id)
+            except Exception:
+                logger.debug("Failed to fetch task info for grading", exc_info=True)
+
         # After push, report a summary score to trigger heartbeat mechanism
-        # The heartbeat prompts come back in the score response
         if pushed_skills + pushed_memory > 0:
             try:
                 resp = bridge.report_score(
-                    task_id="hermes-sync",
+                    task_id=task_id,
                     score=None,
                     title=f"hermes sync: {pushed_skills} skills, {pushed_memory} notes",
                 )
-                # Extract heartbeat prompts from response (same as opencode plugin)
+                # Extract heartbeat prompts from response
                 hb_list = resp.get("heartbeat_prompts", [])
                 for hb in hb_list:
                     prompt = hb.get("prompt", "") if isinstance(hb, dict) else str(hb)
@@ -91,6 +126,13 @@ def register(ctx):
                         pending_heartbeats.append(prompt)
             except Exception:
                 logger.debug("Score report for heartbeat failed", exc_info=True)
+
+        # Git pull — pick up our own HTTP writes + others' changes
+        try:
+            pull()
+            logger.info("Git sync: pulled after session end")
+        except Exception:
+            logger.debug("Git pull after session end failed", exc_info=True)
 
     def pre_llm(messages, tools):
         """Inject heartbeat prompt if available from score report responses."""
@@ -105,14 +147,45 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", pre_llm)
 
 
-def _push_skills(bridge: CaoBridge) -> int:
-    """Scan ~/.hermes/skills/ and push each to Hub. Returns count pushed."""
-    skills_dir = Path(os.environ.get("HERMES_SKILLS_DIR", str(DEFAULT_HERMES_SKILLS)))
-    if not skills_dir.exists():
+def _pull_skills_from_clone() -> int:
+    """Copy skills from ~/.cao-evolution-client/skills/ → ~/.hermes/skills/.
+
+    Returns the number of skills synced.
+    """
+    import shutil
+
+    src = client_skills_dir()
+    if not src.exists():
         return 0
 
+    target = Path(os.environ.get("HERMES_SKILLS_DIR", str(DEFAULT_HERMES_SKILLS)))
+    target.mkdir(parents=True, exist_ok=True)
+
     count = 0
-    for skill_dir in skills_dir.iterdir():
+    for child in src.iterdir():
+        if child.is_dir() and (child / "SKILL.md").exists():
+            dest = target / child.name
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(child, dest, dirs_exist_ok=True)
+            count += 1
+            logger.debug("Pulled skill %s → %s", child.name, dest)
+
+    if count:
+        logger.info("Pulled %d shared skills into hermes local dir", count)
+    return count
+
+
+def _push_skills(bridge: CaoBridge) -> int:
+    """Copy hermes skills to local git clone. Returns count written."""
+    skills_src = Path(os.environ.get("HERMES_SKILLS_DIR", str(DEFAULT_HERMES_SKILLS)))
+    if not skills_src.exists():
+        return 0
+
+    dest = client_skills_dir()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    for skill_dir in skills_src.iterdir():
         if not skill_dir.is_dir():
             continue
         skill_md = skill_dir / "SKILL.md"
@@ -120,35 +193,38 @@ def _push_skills(bridge: CaoBridge) -> int:
             continue
         try:
             content = skill_md.read_text(encoding="utf-8", errors="replace")
-            bridge.share_skill(
-                name=skill_dir.name,
-                content=content,
-                tags=["hermes", skill_dir.name],
-            )
+            target = dest / skill_dir.name
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "SKILL.md").write_text(content, encoding="utf-8")
             count += 1
-            logger.debug("Pushed skill: %s", skill_dir.name)
+            logger.debug("Wrote skill to local clone: %s", skill_dir.name)
         except Exception:
-            logger.warning("Failed to push skill %s", skill_dir.name, exc_info=True)
-    logger.info("Pushed %d hermes skills to Hub", count)
+            logger.warning("Failed to write skill %s", skill_dir.name, exc_info=True)
+    logger.info("Wrote %d hermes skills to local clone", count)
     return count
 
 
 def _push_memory(bridge: CaoBridge) -> int:
-    """Parse MEMORY.md and push entries as notes. Returns count pushed."""
+    """Parse MEMORY.md and write entries as note files locally. Returns count written."""
     mem_path = Path(os.environ.get("HERMES_MEMORY_PATH", str(DEFAULT_HERMES_MEMORY)))
+
+    dest = client_notes_dir()
+    dest.mkdir(parents=True, exist_ok=True)
 
     count = 0
     for title, content in parse_memory(mem_path):
         try:
-            bridge.share_note(
-                title=title,
-                content=content,
-                tags=["hermes", "memory"],
+            import time
+            slug = title[:40].replace(" ", "-").replace("/", "-").lower()
+            fname = f"hermes-{slug}-{int(time.time())}-{count:03d}.md"
+            (dest / fname).write_text(
+                f"---\ntitle: \"{title}\"\ntags: [hermes, memory]\n---\n{content}",
+                encoding="utf-8",
             )
             count += 1
         except Exception:
-            logger.warning("Failed to push memory entry: %s", title, exc_info=True)
-    logger.info("Pushed %d memory entries to Hub", count)
+            logger.warning("Failed to write memory entry: %s", title, exc_info=True)
+    logger.info("Wrote %d memory entries to local clone", count)
     return count
 
 

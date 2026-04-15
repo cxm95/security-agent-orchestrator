@@ -25,4 +25,4 @@ Based on this feedback:
 3. Update your scanning strategy to reduce fp rate
 
 ### Share Learnings
-Call `cao_share_note(title="Feedback Review: ...", content="...", tags="feedback,{task_id}")` with your calibration insights so other agents can benefit.
+Write your calibration insights to `~/.cao-evolution-client/notes/feedback-review-<timestamp>.md` with appropriate frontmatter (title, tags: feedback,{task_id}), then call `cao_push` so other agents can benefit.

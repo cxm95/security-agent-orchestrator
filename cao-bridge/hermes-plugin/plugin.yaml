@@ -1,6 +1,6 @@
 name: cao-evolution
-version: "1.0"
-description: "CAO co-evolution — syncs hermes artifacts to shared pool via CaoBridge"
+version: "1.1"
+description: "CAO co-evolution — syncs hermes artifacts to shared pool via CaoBridge + git"
 settings:
   hub_url:
     type: string
@@ -26,3 +26,8 @@ settings:
     type: boolean
     default: false
     description: "Use CAO judge/evals evolution (disabled — hermes has its own)"
+env:
+  CAO_GIT_REMOTE:
+    description: "Git remote URL of Hub's evolution repo (required for sync)"
+  CAO_CLIENT_DIR:
+    description: "Agent-side clone path (default ~/.cao-evolution-client)"

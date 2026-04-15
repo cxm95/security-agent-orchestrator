@@ -22,14 +22,23 @@ The `cao-bridge` MCP server must be configured. It provides these tools:
 - `cao_report` — Report status and results
 
 **Evolution tools:**
-- `cao_get_grader` — Fetch grader code for a task
+- `cao_get_task` — Fetch task info including grader_skill reference
 - `cao_report_score` — Report evaluation score
 - `cao_get_leaderboard` — View task leaderboard
-- `cao_share_note` — Share knowledge notes
-- `cao_share_skill` — Share reusable skills
 - `cao_search_knowledge` — Search shared knowledge
 
+**Git sync tools:**
+- `cao_sync` — Clone or pull the shared evolution repo (~/.cao-evolution-client/)
+- `cao_push` — Stage, commit and push local changes to Hub
+- `cao_pull_skills` — Copy shared skills from the git clone into your local skills dir
+
 ## Protocol
+
+### 0. Sync Shared Knowledge (at session start)
+
+Call `cao_sync` to clone or pull the latest shared evolution data.
+Then call `cao_pull_skills` to copy shared skills into your local skills
+directory so they are available for automatic loading.
 
 ### 1. Register (once, at session start)
 
@@ -55,19 +64,43 @@ When you receive a task:
 
 After completing a task, participate in the evolution loop:
 
-1. Call `cao_get_grader(task_id="<task>")` to get the grader code.
-2. If grader code is available, run the evaluation locally.
+1. Call `cao_get_task(task_id="<task>")` to get the task info including `grader_skill`.
+2. If `grader_skill` is set, load `evo-skills/<grader_skill>/SKILL.md` and follow its
+   instructions to evaluate your output. The skill should produce `CAO_SCORE=<float>`.
 3. Call `cao_report_score(task_id="<task>", score=<value>, title="<description>")`.
-4. Check `cao_get_leaderboard(task_id="<task>")` to see your ranking.
+4. Check the response for `heartbeat_prompts`. If non-empty, proceed to step 4.5.
+5. Otherwise, call `cao_get_leaderboard(task_id="<task>")` to see your ranking.
+
+### 4.5 Handle Heartbeat
+
+If `heartbeat_prompts` is non-empty in the `cao_report_score` response:
+
+For each prompt in `heartbeat_prompts`:
+1. Read the prompt — it specifies which **evolution skill** to execute.
+2. Load the skill from `evo-skills/` (pulled via `cao_pull_skills`) or
+   from `~/.cao-evolution-client/skills/`.
+3. Execute the skill following its SKILL.md instructions.
+4. After the skill completes, sync results:
+   ```
+   cd ~/.cao-evolution-client && git add -A && git commit -m "heartbeat: <name>" && git push
+   ```
+   Or call `cao_sync` to pull/push.
+
+### 4.6 Post-Heartbeat Continuation
+
+After all heartbeat actions complete:
+1. Continue your main task.
+2. On next task completion, run grader + `cao_report_score` again.
+3. Return to step 2 (polling).
 
 ### 5. Knowledge Sharing
 
 Share insights from your work to help the team improve:
 
-- **Notes**: Call `cao_share_note(title="...", content="...", tags="security,java")`
-  when you discover something useful (patterns, anti-patterns, approaches).
-- **Skills**: Call `cao_share_skill(name="...", content="...", tags="...")`
-  when you develop a reusable technique or procedure.
+- **Notes**: Write a markdown note to `~/.cao-evolution-client/notes/` with YAML frontmatter
+  (title, tags, creator) then call `cao_push` to sync to Hub.
+- **Skills**: Write a `SKILL.md` to `~/.cao-evolution-client/skills/<name>/`
+  then call `cao_push` to share it with the team.
 - **Search**: Call `cao_search_knowledge(query="...", tags="...")` before starting
   a task to see if others have shared relevant knowledge.
 
@@ -87,3 +120,12 @@ After reporting, go back to step 2 and poll for the next task.
 - Between polls, wait 3–5 seconds to avoid flooding the Hub.
 - Search knowledge before starting complex tasks.
 - Share notes when you learn something that could help others.
+
+## Creating Tasks Locally
+
+If the user asks you to create a task for evolution tracking:
+
+1. Call `cao_create_task(task_id="<id>", name="<name>", description="<desc>",
+   grader_skill="security-grader")` via MCP.
+2. The Hub will store the `task.yaml` and make it available to all agents.
+3. After completing the task, follow step 4 above to grade and report.

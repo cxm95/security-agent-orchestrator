@@ -1,39 +1,34 @@
 ## Heartbeat: Skill Evolution
 
-Your score has plateaued. Instead of tweaking your approach, focus on **improving an existing skill** or **creating a refined version**.
+Your score has plateaued ({evals_since_improvement} evals without improvement).
+Instead of tweaking your approach, **evolve your skills**.
 
-### Evolution Signals
+### Context
 ```json
 {evolution_signals_json}
 ```
+Leaderboard: {leaderboard}
 
-### Step 1: Identify the weakest skill
-Review your current skills and the signals above. Which skill is most responsible for the plateau? Look for:
-- Skills with low eval pass rates
-- Skills that the signals highlight as underperforming
-- Skills that haven't been updated despite changing requirements
+### Action
 
-### Step 2: Diagnose root cause
-Read the skill's content and its `evals.json` (if present). What specific test cases does it fail? What patterns does it miss?
+Load and execute the **secskill-evo** skill (Evolution Mode) from your evolution skills directory.
+The skill is at: `evo-skills/secskill-evo/SKILL.md`
+(or pulled into your local skills dir via `cao_pull_skills`)
 
-### Step 3: Evolve the skill
-Create an improved version. Key principles:
-- **Keep what works** — don't rewrite from scratch unless fundamentally flawed
-- **Add missing cases** — address specific failures from evals
-- **Update TIP.md** — record what you learned and what you changed
+Pass this context to the skill:
+- **Which skill to evolve**: The skill most related to your current task plateau.
+  Identify it from the evolution signals or by reviewing your recent work.
+- **What went wrong**: Your recent attempts show no improvement.
+  Use the evolution signals and leaderboard above for details.
+- **Signals**: The full evolution signals JSON above.
 
-### Step 4: Validate
-After modifying the skill, run its evals to confirm:
-- All previously passing cases still pass (no regression)
-- At least one previously failing case now passes (improvement)
+The skill will guide you through: judge → analyze → snapshot → improve → validate → commit.
+It uses `/tmp/cao-evo-workspace/` for safe isolation (won't pollute your git repo).
 
-If validation fails, revert and try a different approach.
+### After Evolution
 
----
-
-**Actions**:
-1. Read current skills via `cao_get_shared_skills`
-2. Modify the skill file locally
-3. Run evals: check `evals.json` for the skill
-4. If improved, share via `cao_share_skill`
-5. Record learnings in `cao_share_note(tags="evolution,skill,{task_id}")`
+1. The evolved skill is copied back to your skills directory automatically
+2. Sync: `cd ~/.cao-evolution-client && git add -A && git commit -m "evolve: <skill>" && git push`
+   (or call `cao_sync`)
+3. Continue your main task
+4. Report new score via `cao_report_score` to close the feedback loop

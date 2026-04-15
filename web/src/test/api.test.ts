@@ -37,25 +37,25 @@ describe('API wrapper', () => {
   })
 
   it('listProviders fetches /agents/providers', async () => {
-    const providers = [{ name: 'kiro_cli', binary: 'kiro-cli', installed: true }]
+    const providers = [{ name: 'claude_code', binary: 'claude', installed: true }]
     mockResponse(providers)
     const result = await api.listProviders()
     expect(result).toEqual(providers)
   })
 
   it('createSession sends POST with params', async () => {
-    const terminal = { id: 't1', name: 'dev', provider: 'kiro_cli', session_name: 's1' }
+    const terminal = { id: 't1', name: 'dev', provider: 'claude_code', session_name: 's1' }
     mockResponse(terminal)
-    await api.createSession('kiro_cli', 'developer')
+    await api.createSession('claude_code', 'developer')
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/sessions?provider=kiro_cli&agent_profile=developer'),
+      expect.stringContaining('/sessions?provider=claude_code&agent_profile=developer'),
       expect.objectContaining({ method: 'POST' })
     )
   })
 
   it('createSession includes working directory when provided', async () => {
     mockResponse({ id: 't1' })
-    await api.createSession('kiro_cli', 'developer', undefined, '/home/user/project')
+    await api.createSession('claude_code', 'developer', undefined, '/home/user/project')
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining('working_directory='),
       expect.any(Object)

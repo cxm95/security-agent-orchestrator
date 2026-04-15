@@ -1,22 +1,56 @@
 #!/bin/bash
 # hermes-sync.sh — Fallback sync script (no Plugin required).
-# Pushes hermes skills + MEMORY.md entries to CAO Hub via HTTP API.
-# Same data path as the Plugin: CaoBridge → HTTP → files → git.
+# Pushes hermes skills + MEMORY.md entries to CAO Hub via HTTP API,
+# then does git pull to sync latest shared knowledge locally.
 #
 # Usage:
 #   ./hermes-sync.sh              # one-shot
 #   watch -n 60 ./hermes-sync.sh  # periodic (every 60s)
 #
 # Environment:
-#   CAO_HUB_URL      — Hub URL (default: http://127.0.0.1:9889)
+#   CAO_HUB_URL       — Hub URL (default: http://127.0.0.1:9889)
 #   HERMES_HOME       — Hermes home dir (default: ~/.hermes)
 #   CAO_AGENT_PROFILE — Agent profile (default: remote-hermes)
+#   CAO_GIT_REMOTE    — Git remote URL for evolution repo
+#   CAO_CLIENT_DIR    — Local clone path (default: ~/.cao-evolution-client)
 set -euo pipefail
 
 HUB="${CAO_HUB_URL:-http://127.0.0.1:9889}"
 HERMES="${HERMES_HOME:-$HOME/.hermes}"
 PROFILE="${CAO_AGENT_PROFILE:-remote-hermes}"
+GIT_REMOTE="${CAO_GIT_REMOTE:-}"
+CLIENT_DIR="${CAO_CLIENT_DIR:-$HOME/.cao-evolution-client}"
 PUSHED=0
+
+# ── Git sync (clone or pull) ──────────────────────────────────────────
+if [ -n "$GIT_REMOTE" ]; then
+  if [ -d "$CLIENT_DIR/.git" ]; then
+    BRANCH=$(git -C "$CLIENT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    [ "$BRANCH" = "HEAD" ] && BRANCH="main"
+    git -C "$CLIENT_DIR" fetch --all 2>/dev/null || true
+    git -C "$CLIENT_DIR" pull --rebase origin "$BRANCH" 2>/dev/null || true
+    echo "[hermes-sync] Git pull ok (branch=$BRANCH)"
+  else
+    git clone --filter=blob:none "$GIT_REMOTE" "$CLIENT_DIR" 2>/dev/null && {
+      git -C "$CLIENT_DIR" config user.name "cao-agent"
+      git -C "$CLIENT_DIR" config user.email "cao-agent@local"
+      echo "[hermes-sync] Git clone ok"
+    } || echo "[hermes-sync] Git clone failed" >&2
+  fi
+
+  # Pull shared skills into hermes local dir
+  SRC_SKILLS="$CLIENT_DIR/skills"
+  HERMES_SKILLS="$HERMES/skills"
+  if [ -d "$SRC_SKILLS" ]; then
+    mkdir -p "$HERMES_SKILLS"
+    for skill_dir in "$SRC_SKILLS"/*/; do
+      [ -f "${skill_dir}SKILL.md" ] || continue
+      name=$(basename "$skill_dir")
+      cp -r "$skill_dir" "$HERMES_SKILLS/$name" 2>/dev/null || true
+    done
+    echo "[hermes-sync] Pulled shared skills from git clone"
+  fi
+fi
 
 # Register (get terminal_id)
 TID=$(curl -sf -X POST "$HUB/remotes/register" \
@@ -85,3 +119,11 @@ print(f'[hermes-sync] Pushed {pushed} memory entries')
 fi
 
 echo "[hermes-sync] Done. Skills pushed: $PUSHED"
+
+# Final git pull to pick up our HTTP writes + others' changes
+if [ -n "$GIT_REMOTE" ] && [ -d "$CLIENT_DIR/.git" ]; then
+  BRANCH=$(git -C "$CLIENT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  [ "$BRANCH" = "HEAD" ] && BRANCH="main"
+  git -C "$CLIENT_DIR" pull --rebase origin "$BRANCH" 2>/dev/null || true
+  echo "[hermes-sync] Final git pull done"
+fi

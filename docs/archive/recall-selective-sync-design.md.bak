@@ -1,0 +1,580 @@
+# Recall + 选择性同步 设计文档
+
+> **核心问题**：当共享知识库增长（大量 skill/note/attempt），远程 Agent 不能全量同步，
+> 需要 **远程发现** → **选择性拉取整个文件** → **本地进化** → **增量推回**。
+
+> **本文档是未来的目标架构（multi-repo + recall），当前实施采用单仓兼容方案。**
+
+---
+
+## 一、设计背景
+
+### 1.1 当前问题
+
+| 问题 | 原因 | 影响 |
+|------|------|------|
+| `skill_sync.py` 全量同步 | push/pull 复制所有 skill 到本地 | 仓库大了不可行 |
+| `search_knowledge()` grep | 逐文件 `if query in text.lower()` | 无排序、无相关性评分 |
+| 单一大仓 `shared/` | 所有内容在一个 git repo | 仓库增长无上限 |
+| Agent 不知道要什么 | 全量拉取后本地 grep | 网络/存储浪费 |
+
+### 1.2 设计原则
+
+1. **发现和传输分离**：recall API 做发现（轻量），git/HTTP 做传输（整个文件）
+2. **文件粒度同步**：不拉片段，拉完整 skill/note/attempt 到本地
+3. **Git 做版本管理**：所有内容有 git 历史可追溯
+4. **渐进式切换**：当前单仓 → 未来多仓，接口不变
+5. **降级兼容**：有 git 用 sparse checkout，没 git 用 HTTP fallback（hermes 场景）
+
+---
+
+## 二、目标架构（多仓方案）
+
+### 2.1 仓库拆分
+
+```
+~/.cao-evolution/
+│
+├── skills/                  # Git 仓 1: 技能文件（可配多个，按主题拆）
+│   ├── .git/
+│   ├── sql-inject-v2/
+│   │   └── SKILL.md
+│   ├── xss-detector/
+│   │   └── SKILL.md
+│   └── README.md
+│
+├── notes/                   # Git 仓 2: 知识笔记（可配多个，按主题拆）
+│   ├── .git/
+│   ├── sqli-approach.md
+│   ├── _synthesis/
+│   └── _connections.md
+│
+├── attempts/                # Git 仓 3: 评分记录（按 task 分子目录）
+│   ├── .git/
+│   ├── sql-inject-01/
+│   │   ├── abc123.json      # Agent-A 的 attempt
+│   │   └── def456.json      # Agent-B 的 attempt
+│   └── xss-fix-02/
+│       └── ...
+│
+├── graders/                 # Git 仓 4: 评分脚本（可复用、可进化）
+│   ├── .git/
+│   ├── security/
+│   │   ├── sql-grader.py
+│   │   └── xss-grader.py
+│   └── general/
+│       └── code-quality-grader.py
+│
+├── tasks/                   # 普通目录: 任务定义（静态，API 管理）
+│   └── {task_id}/
+│       └── task.yaml        # 引用 graders/ 中的脚本路径
+│
+└── heartbeat/               # 普通目录: 心跳配置
+    ├── _global.json
+    └── {agent_id}.json
+```
+
+### 2.2 为什么这样拆？
+
+| 内容类型 | 变化频率 | 需要 Agent 同步 | 需要 git 版本 | 决策 |
+|---|---|---|---|---|
+| **Skills** | 高（持续进化） | ✅ 本地使用+进化 | ✅ 版本历史 | Git 仓 |
+| **Notes** | 中（持续积累） | ✅ 参考学习 | ✅ synthesis 更新 | Git 仓 |
+| **Attempts** | 高（只追加） | ✅ 参考他人高分 | ✅ 追溯审计 | Git 仓 |
+| **Graders** | 低（可进化） | ✅ 本地运行评分 | ✅ 评分逻辑变更 | Git 仓 |
+| **Tasks** | 极低（创建后不变） | ❌ API 读取即可 | ❌ 静态定义 | 普通目录 |
+| **Heartbeat** | 低（配置变更） | ❌ Hub 管理 | ❌ 运行时状态 | 普通目录 |
+
+### 2.3 配置（可选多仓）
+
+```yaml
+# cao-config.yaml
+repos:
+  skills:
+    - name: default
+      path: ~/.cao-evolution/skills
+      remote: ""                       # 可选 git remote URL
+    - name: security                   # 可选：按主题拆第二个仓
+      path: ~/.cao-evolution/skills-security
+      remote: git@github.com:team/skills-security.git
+  notes:
+    - name: default
+      path: ~/.cao-evolution/notes
+  attempts:
+    - name: default
+      path: ~/.cao-evolution/attempts
+  graders:
+    - name: default
+      path: ~/.cao-evolution/graders
+```
+
+默认各 1 个仓。用户可按需拆分（例如安全 skill 单独一个仓）。
+
+---
+
+## 三、Recall 发现层
+
+### 3.1 RecallIndex（Hub 端 BM25 内存索引）
+
+```python
+class RecallIndex:
+    """Hub 端 — 横跨所有仓构建 BM25 索引，提供轻量级发现能力。"""
+
+    def __init__(self):
+        self._docs: dict[str, DocMeta] = {}
+        self._inverted: dict[str, set[str]] = {}  # token → doc_ids
+        self._doc_lens: dict[str, int] = {}
+        self._avg_dl: float = 0.0
+
+    def rebuild(self, repo_dirs: dict[str, Path]) -> int:
+        """冷启动：扫描所有仓目录，提取元数据构建索引。
+        repo_dirs = {"skills": Path, "notes": Path, "attempts": Path, "graders": Path}
+        """
+
+    def add(self, doc: DocMeta) -> None:
+        """增量添加：POST /knowledge/* 后调用。"""
+
+    def remove(self, doc_id: str) -> None:
+        """删除：文件被移除时调用。"""
+
+    def search(self, query: str, *,
+               doc_type: str = "all",   # "skill"|"note"|"attempt"|"grader"|"all"
+               tags: list[str] | None = None,
+               top_k: int = 10) -> list[RecallResult]:
+        """BM25 粗排 + 元数据精排 → 只返回元数据，不返回内容。"""
+```
+
+### 3.2 索引文档元数据
+
+```python
+@dataclass
+class DocMeta:
+    id: str              # 文档唯一 ID（skill name / note filename / attempt hash）
+    doc_type: str        # "skill" | "note" | "attempt" | "grader"
+    repo_name: str       # 所在仓库名（"default" / "security" 等）
+    title: str           # skill 标题 / note 标题 / attempt 消息
+    tags: list[str]      # 标签列表（从 YAML frontmatter / SKILL.md 提取）
+    agent_id: str        # 创建者 Agent ID
+    updated_at: str      # ISO 8601 最后更新时间
+    byte_size: int       # 文件大小（供 Agent 判断是否值得拉取）
+    quality: float       # 质量分（skills: 进化代数/选用次数；attempts: score）
+    parent_id: str | None  # skill 谱系（父 skill ID）
+    generation: int      # 进化代数（0 = 原始）
+    rel_path: str        # 仓内相对路径（用于 sparse checkout / HTTP fetch）
+    # BM25 用
+    _tokens: list[str] = field(default_factory=list, repr=False)
+
+
+@dataclass
+class RecallResult:
+    doc: DocMeta
+    score: float         # BM25 + 元数据加权后的综合分
+    match_reason: str    # "bm25:sql,injection" | "tag:security" | "lineage:parent-of-v2"
+```
+
+### 3.3 BM25 + 元数据精排公式
+
+```
+Stage 1: BM25 粗排
+  bm25(q, d) = Σ IDF(qi) * tf(qi, d) * (k1 + 1) / (tf(qi, d) + k1 * (1 - b + b * |d| / avgdl))
+  k1 = 1.5, b = 0.75
+
+Stage 2: 元数据精排（乘法加权）
+  final_score = bm25_score
+              * (1.0 + tag_bonus)           # tag 匹配 Jaccard 相似度 [0, 1]
+              * recency_decay               # exp(-0.005 * days_old), 范围 [0.5, 1.0]
+              * (0.5 + quality * 0.5)        # quality 归一化 [0.5, 1.0]
+              * lineage_boost               # 如果查询命中了某 skill 的 parent/child，加 1.2x
+```
+
+### 3.4 Hub API 端点
+
+```
+# 发现（只返回元数据，轻量）
+GET  /evolution/recall
+  ?q=sql+injection          # 查询文本
+  &type=skill               # 可选：过滤类型（skill|note|attempt|grader|all）
+  &tags=security,sql        # 可选：标签过滤
+  &top_k=10                 # 返回数量
+  → list[RecallResult]
+
+# 拉取（返回完整文件内容）
+GET  /evolution/recall/{doc_type}/{doc_id}
+  → { meta: DocMeta, content: str }
+
+# 批量拉取
+POST /evolution/recall/batch
+  body: { ids: [{ type: "skill", id: "sql-inject-v2" }, ...] }
+  → list[{ meta: DocMeta, content: str }]
+```
+
+---
+
+## 四、选择性同步机制
+
+### 4.1 有 Git 的 Agent（推荐：Partial Clone + Sparse Checkout）
+
+```bash
+# ① 首次：Partial Clone（仅下载元数据，不下载文件内容）
+git clone --filter=blob:none --sparse \
+  http://hub-host:9889/git/skills ~/.cao-evolution/local/skills
+cd ~/.cao-evolution/local/skills
+
+# ② recall 发现后：Sparse Checkout 指定路径
+git sparse-checkout add sql-inject-v2 xss-detector
+# Git 按需从远程拉取这两个目录的文件内容
+
+# ③ 本地进化
+vim sql-inject-v2/SKILL.md
+# ... evolve ...
+
+# ④ 推回
+git add sql-inject-v2/ && git commit -m "evolve: sql-inject-v2 v3"
+git push origin main
+
+# ⑤ 发现更多相关内容
+# recall API → 得到 waf-bypass-skill
+git sparse-checkout add waf-bypass-skill
+```
+
+**并发安全性分析**：
+
+| 场景 | 安全？ | 说明 |
+|---|---|---|
+| Agent A 改 skill-A，Agent B 改 skill-B | ✅ | 不同路径，auto-merge |
+| Agent A 和 B 同时改同一个 skill | ⚠️ | Git 冲突，需 rebase 解决（概率低） |
+| push 后另一 Agent pull | ✅ | sparse checkout 只更新已选路径 |
+| 非 sparse 路径被他人改了 | ✅ | 透明，本地不受影响 |
+| recall 发现新 skill → sparse-checkout add | ✅ | 增量追加，不影响已有 |
+
+**Merge 风险缓解**：
+1. 每次工作前 `git pull --rebase`
+2. 每个 skill 单独一次 commit（粒度小 = 冲突少）
+3. SKILL.md 通常是一个原子文件，不会部分冲突
+
+### 4.2 无 Git 的 Agent（HTTP Fallback，hermes 场景）
+
+```bash
+# ① 发现
+curl "http://hub:9889/evolution/recall?q=sql+injection&type=skill"
+# → [{ id: "sql-inject-v2", rel_path: "sql-inject-v2/SKILL.md", ... }]
+
+# ② 拉取完整文件
+curl "http://hub:9889/evolution/recall/skill/sql-inject-v2" > local/sql-inject-v2/SKILL.md
+
+# ③ 本地使用 + 进化
+
+# ④ 推回（使用已有 POST API）
+curl -X POST http://hub:9889/evolution/knowledge/skills \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "sql-inject-v3", "content": "...", "agent_id": "hermes-1" }'
+```
+
+### 4.3 Agent 端完整数据流
+
+```
+                                    ┌─────────────────────────┐
+                                    │    Hub (Central)        │
+                                    │                         │
+Agent 收到任务:                      │  RecallIndex            │
+"检测 SQL 注入漏洞"                   │    BM25 over all repos  │
+     │                              │                         │
+     ▼  ① 发现                      │  skills.git/            │
+bridge.recall("sql injection",      │  notes.git/             │
+              type="skill")         │  attempts.git/          │
+     │                              │  graders.git/           │
+     ▼  GET /evolution/recall       │                         │
+     │  ─────────────────────────>  │  search() → metadata    │
+     │  <─────────────────────────  │                         │
+     │  [{sql-inject-v2, sqli-waf}] │                         │
+     │                              │                         │
+     ▼  ② 选择性拉取                │                         │
+     │  git sparse-checkout add     │                         │
+     │  或 GET /recall/{type}/{id}  │                         │
+     │  ─────────────────────────>  │  返回完整文件           │
+     │  <─────────────────────────  │                         │
+     │                              │                         │
+     ▼  ③ 本地缓存                  │                         │
+local/skills/sql-inject-v2/SKILL.md │                         │
+     │                              │                         │
+     ▼  ④ 使用 + 进化               │                         │
+Agent 使用 skill → Judge 评分       │                         │
+→ evolve → 新版本 sql-inject-v3     │                         │
+     │                              │                         │
+     ▼  ⑤ 增量推回                  │                         │
+git push 或 POST /knowledge/skills  │                         │
+     │  ─────────────────────────>  │  写入 + checkpoint      │
+     │                              │  recall_index.add()     │
+     │                              │                         │
+     ▼  ⑥ 其他 Agent 可发现         │                         │
+                                    │  Agent-B recall() →     │
+                                    │  发现 sql-inject-v3     │
+                                    └─────────────────────────┘
+```
+
+---
+
+## 五、Attempt JSON 结构
+
+```json
+{
+  "run_id": "uuid-...",
+  "commit_hash": "abc123",
+  "parent_hash": "def456",
+  "agent_id": "agent-3",
+  "task_id": "sql-inject-01",
+  "score_bundle": {
+    "scores": {
+      "correctness": { "value": 0.85, "name": "correctness", "explanation": "参数化查询覆盖率 85%" },
+      "security": { "value": 0.92, "name": "security", "explanation": "通过所有 OWASP 测试用例" }
+    },
+    "aggregated": 0.88,
+    "feedback": "SQL参数化做得好，但遗漏了存储过程场景"
+  },
+  "evolution_signals": [
+    { "source": "grader", "dimensions": { "correctness": 0.85, "security": 0.92 } },
+    { "source": "judge", "dimensions": { "approach": "promising", "coverage": 0.7 } }
+  ],
+  "status": "improved",
+  "message": "v3: 增加了存储过程的参数化检测",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "shared_state_hash": "git-sha-..."
+}
+```
+
+**其他 Agent 的使用方式**：
+1. recall 发现某 task 的高分 attempt
+2. 拉取 attempt JSON → 阅读 feedback、evolution_signals、策略描述
+3. 作为自己任务的参考输入
+
+---
+
+## 六、Grader 管理
+
+### 6.1 task.yaml 引用 grader
+
+```yaml
+# tasks/sql-inject-01/task.yaml
+name: sql-injection-detection
+description: 检测并修复 SQL 注入漏洞
+grader: security/sql-grader.py     # ← 引用 graders 仓中的相对路径
+tips:
+  - 参考 OWASP SQL Injection Prevention Cheat Sheet
+  - 优先使用参数化查询
+eval_data:
+  test_suite: owasp-sqli-v2
+```
+
+### 6.2 Grader 仓结构
+
+```
+graders.git/
+├── security/
+│   ├── sql-grader.py       # class SqlGrader(GraderBase): ...
+│   ├── xss-grader.py
+│   └── common.py           # 共享工具函数
+├── general/
+│   └── code-quality-grader.py
+└── README.md
+```
+
+### 6.3 Grader 执行流程
+
+```
+Agent 接到 task sql-inject-01
+  ↓
+GET /evolution/tasks/sql-inject-01 → task.yaml
+  grader: security/sql-grader.py
+  ↓
+Agent recall("sql-grader", type="grader")
+  或直接 sparse-checkout graders 仓中的 security/sql-grader.py
+  ↓
+Agent 本地执行 grader:
+  grader = load_grader("security/sql-grader.py")
+  scores = grader.evaluate(workdir)
+  ↓
+POST /evolution/tasks/sql-inject-01/scores
+  { score_bundle: scores, evolution_signals: [...] }
+```
+
+---
+
+## 七、CaoBridge 新增方法
+
+```python
+class CaoBridge:
+    # ─── 已有方法 ───
+    # register(), report_score(), push_skills(), push_notes(), ...
+
+    # ─── 新增: 发现 ───
+    def recall(self, query: str, doc_type: str = "all",
+               tags: list[str] | None = None,
+               top_k: int = 10) -> list[dict]:
+        """GET /evolution/recall → 返回元数据列表（轻量）"""
+
+    # ─── 新增: 拉取 ───
+    def fetch(self, doc_type: str, doc_id: str,
+              save_local: bool = True) -> dict:
+        """GET /evolution/recall/{type}/{id} → 完整文件内容，可选保存到本地缓存"""
+
+    # ─── 新增: 一步到位 ───
+    def selective_sync(self, query: str, doc_type: str = "skill",
+                       top_k: int = 5) -> list[Path]:
+        """recall() + fetch() + save → 返回本地文件路径列表"""
+
+    # ─── 新增: MCP 工具 ───
+    # recall_knowledge(query, type, top_k) → 包装 recall()
+```
+
+---
+
+## 八、从单仓到多仓的迁移路径
+
+### 8.1 当前实施（Phase A: 单仓 + recall 层）
+
+```
+~/.cao-evolution/
+└── shared/                          # 一个 git 仓（当前）
+    ├── .git/
+    ├── knowledge/
+    │   ├── notes/*.md
+    │   ├── skills/{name}/SKILL.md
+    │   └── _synthesis/
+    ├── attempts/{task_id}/*.json
+    ├── tasks/{task_id}/task.yaml
+    └── graders/{category}/grader.py  # 新增目录
+```
+
+改动：
+1. 新增 `shared/graders/` 目录
+2. 新增 `RecallIndex` + recall API
+3. 新增 `RepoManager` 抽象（单仓模式）
+4. `search_knowledge()` 改用 RecallIndex
+5. CaoBridge 新增 recall/fetch 方法
+
+### 8.2 未来迁移（Phase B: 多仓）
+
+```bash
+# 迁移脚本（概念）
+cd ~/.cao-evolution/shared
+
+# 1. 拆出 skills 仓
+git filter-branch --subdirectory-filter knowledge/skills -- --all
+# → 新建 ~/.cao-evolution/skills/ 并 git init
+
+# 2. 拆出 notes 仓
+# ... 同理
+
+# 3. 更新配置
+# CAO_REPO_MODE=multi
+```
+
+**对 Agent 侧的影响**：零。因为 Agent 通过 recall API 发现 + HTTP/git 拉取，
+不关心 Hub 内部是一个仓还是多个仓。
+
+### 8.3 兼容层：RepoManager
+
+```python
+class RepoManager:
+    """路径抽象层 — 屏蔽单仓/多仓差异。"""
+
+    def __init__(self, evolution_dir: str, mode: str = "single"):
+        self.base = Path(evolution_dir)
+        self.mode = mode  # "single" | "multi"
+
+    def get_dir(self, content_type: str) -> Path:
+        if self.mode == "single":
+            mapping = {
+                "skills": self.base / "shared" / "knowledge" / "skills",
+                "notes":  self.base / "shared" / "knowledge" / "notes",
+                "attempts": self.base / "shared" / "attempts",
+                "graders": self.base / "shared" / "graders",
+                "tasks":  self.base / "shared" / "tasks",
+                "heartbeat": self.base / "heartbeat",
+            }
+            return mapping[content_type]
+        else:  # multi
+            return self.base / content_type
+
+    def checkpoint(self, content_type: str, agent_id: str, message: str):
+        if self.mode == "single":
+            return checkpoint(self.base, agent_id, message)  # commit all
+        else:
+            return checkpoint_repo(self.get_dir(content_type), agent_id, message)
+
+    def list_repos(self) -> dict[str, Path]:
+        """列出所有仓库路径（单仓模式返回一个，多仓模式返回多个）。"""
+```
+
+---
+
+## 九、hermes Agent 兼容
+
+hermes agent 通过 HTTP fallback 接入 recall 机制：
+
+```
+Hermes Plugin ─── bridge.recall("sql injection") ──→ Hub recall API
+                                                       ↓
+              ←── metadata list ────────────────────────┘
+                                                       
+Hermes Plugin ─── bridge.fetch("skill", "sql-inject-v2") ──→ Hub
+                                                               ↓
+              ←── full SKILL.md content ───────────────────────┘
+              ↓
+              保存到 ~/.hermes/skills/sql-inject-v2/SKILL.md
+
+hermes-sync.sh 降级脚本：
+  curl "http://hub/evolution/recall?q=$QUERY&type=skill" | jq '.[0].id'
+  curl "http://hub/evolution/recall/skill/$ID" > skill.md
+```
+
+hermes 的自进化结果也可以被 recall 索引发现（通过 push 到 Hub 后 RecallIndex 自动更新）。
+
+---
+
+## 十、代码量估算
+
+### Phase A（当前实施，单仓 + recall 层）
+
+| 文件 | 新增/改动 | 行数 | 说明 |
+|------|-----------|------|------|
+| `evolution/recall_index.py` | 新增 | ~150 | BM25 索引 + 元数据精排 |
+| `evolution/repo_manager.py` | 新增 | ~60 | 路径抽象层 |
+| `api/evolution_routes.py` | 改动 | ~80 | 3 个 recall 端点 + 初始化 |
+| `cao-bridge/bridge.py` | 改动 | ~40 | recall + fetch + selective_sync |
+| `mcp_server/evolution_tools.py` | 改动 | ~20 | recall_knowledge MCP tool |
+| `tests/test_recall.py` | 新增 | ~100 | 单元测试 |
+| **总计** | | **~450** | 零外部依赖 |
+
+### Phase B（未来，多仓迁移）
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `checkpoint.py` | 改动 | 支持 per-repo checkpoint |
+| `repo_manager.py` | 改动 | multi 模式实现 |
+| `evolution_routes.py` | 改动 | 写入时路由到正确的仓 |
+| 迁移脚本 | 新增 | git filter-branch 拆仓 |
+
+---
+
+## 十一、FAQ
+
+**Q: 为什么不直接用 memsearch 做召回？**
+A: memsearch 需要 Milvus + embedding API，重依赖。BM25 零依赖，足够覆盖初期需求。
+RecallIndex 预留了 `embed_fn` 接口，未来可无缝接入 memsearch。
+
+**Q: 为什么 attempts 也放 git 仓？**
+A: 其他 Agent 需要参考高分 attempt 的策略和 feedback。recall 可以发现相关 attempt，
+sparse checkout 可以只拉需要的那几个 JSON 文件。
+
+**Q: partial clone + sparse checkout 对 Git 版本有什么要求？**
+A: `--filter=blob:none` 和 `--sparse` 需要 Git 2.25+（2020.1 发布）。
+主流 Linux 发行版（Ubuntu 20.04+）默认满足。
+
+**Q: 如果两个 Agent 同时 push 同一个 skill 怎么办？**
+A: 后 push 的会收到 merge conflict。推荐工作流：每次 push 前先 `git pull --rebase`。
+由于每个 skill 是独立目录，跨 skill 不会冲突；同 skill 冲突概率很低。
+
+**Q: RecallIndex 重启后丢失怎么办？**
+A: Hub 启动时调用 `recall_index.rebuild(repo_dirs)` 从文件重建。
+对于几千个文件，重建时间 < 1 秒。

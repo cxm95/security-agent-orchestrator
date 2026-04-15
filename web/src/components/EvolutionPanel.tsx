@@ -386,7 +386,7 @@ export function EvolutionPanel() {
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<any[]>([])
-
+  const [useRecall, setUseRecall] = useState(false)
   const refresh = async () => {
     setLoading(true)
     try {
@@ -424,8 +424,19 @@ export function EvolutionPanel() {
   const handleSearch = async () => {
     if (!searchQuery.trim()) return
     try {
-      const r = await api.searchKnowledge(searchQuery)
-      setSearchResults(r)
+      if (useRecall) {
+        const r = await api.recallKnowledge(searchQuery)
+        setSearchResults(r.map(item => ({
+          type: item.type,
+          name: item.title,
+          snippet: item.snippet,
+          tags: item.tags?.join(', ') || '',
+          score: item.score,
+        })))
+      } else {
+        const r = await api.searchKnowledge(searchQuery)
+        setSearchResults(r)
+      }
     } catch (e) {
       console.error('Search failed:', e)
     }
@@ -525,6 +536,13 @@ export function EvolutionPanel() {
             className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500"
           />
           <button
+            onClick={() => setUseRecall(!useRecall)}
+            className={`px-2 py-1.5 rounded-lg text-xs transition ${useRecall ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'}`}
+            title={useRecall ? 'BM25 Recall (ranked)' : 'Text Search (grep)'}
+          >
+            {useRecall ? 'BM25' : 'Grep'}
+          </button>
+          <button
             onClick={handleSearch}
             className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm transition"
           >
@@ -538,6 +556,7 @@ export function EvolutionPanel() {
                 <div className="flex items-center gap-2">
                   <span className="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">{r.type}</span>
                   <span className="text-white">{r.name}</span>
+                  {r.score != null && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300 ml-1">{r.score.toFixed(2)}</span>}
                   {r.tags && <span className="text-gray-500 text-xs ml-auto">{r.tags}</span>}
                 </div>
                 <p className="text-gray-400 text-xs mt-1 line-clamp-2">{r.snippet}</p>

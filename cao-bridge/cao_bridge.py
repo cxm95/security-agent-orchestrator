@@ -1,10 +1,12 @@
 """CAO Remote Bridge — shared HTTP client for all bridge variants.
 
-This module talks to the CAO Hub server's /remotes/ endpoints.
+This module talks to the CAO Hub server's /remotes/ endpoints and
+synchronises shared knowledge via git (agent-side clone at ~/.cao-evolution-client/).
 """
 
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
 
@@ -14,13 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 class CaoBridge:
-    """HTTP client that registers with CAO Hub and exchanges input/output."""
+    """HTTP client that registers with CAO Hub and exchanges input/output.
+
+    Also manages a local git clone (``~/.cao-evolution-client/``) for
+    bi-directional knowledge sync with the Hub's evolution repo.
+    """
 
     def __init__(self, hub_url: str = "http://127.0.0.1:9889",
-                 agent_profile: str = "remote-agent"):
+                 agent_profile: str = "remote-agent",
+                 git_remote: str = ""):
         self.hub_url = hub_url.rstrip("/")
         self.agent_profile = agent_profile
         self.terminal_id: Optional[str] = None
+        self._git_remote = git_remote  # explicit override; env fallback in git_sync
 
     _TIMEOUT = 30  # seconds
 
@@ -77,15 +85,6 @@ class CaoBridge:
 
     # ── Evolution endpoints ──────────────────────────────────────────
 
-    def get_grader(self, task_id: str) -> Optional[str]:
-        """Fetch grader source code for a task. Returns None if not found."""
-        resp = requests.get(f"{self.hub_url}/evolution/{task_id}/grader",
-                            timeout=self._TIMEOUT)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return resp.json().get("grader_code")
-
     def report_score(self, task_id: str, score: Optional[float],
                      title: str = "", feedback: str = "") -> dict:
         """Report an evaluation score to the Hub."""
@@ -108,34 +107,6 @@ class CaoBridge:
         resp.raise_for_status()
         return resp.json()
 
-    def share_note(self, title: str, content: str,
-                   tags: Optional[list] = None, origin_task: str = "",
-                   origin_score: Optional[float] = None,
-                   confidence: str = "medium") -> dict:
-        """Share a knowledge note to the Hub."""
-        resp = requests.post(
-            f"{self.hub_url}/evolution/knowledge/notes",
-            json={"title": title, "content": content,
-                   "tags": tags or [], "agent_id": self.terminal_id or "",
-                   "origin_task": origin_task, "origin_score": origin_score,
-                   "confidence": confidence},
-            timeout=self._TIMEOUT,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def share_skill(self, name: str, content: str,
-                    tags: Optional[list] = None) -> dict:
-        """Share a reusable skill to the Hub."""
-        resp = requests.post(
-            f"{self.hub_url}/evolution/knowledge/skills",
-            json={"name": name, "content": content,
-                   "tags": tags or [], "agent_id": self.terminal_id or ""},
-            timeout=self._TIMEOUT,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
     def search_knowledge(self, query: str, tags: str = "",
                          top_k: int = 10) -> list:
         """Search shared knowledge (notes + skills)."""
@@ -147,18 +118,42 @@ class CaoBridge:
         resp.raise_for_status()
         return resp.json()
 
+    def recall_knowledge(self, query: str, tags: str = "",
+                         top_k: int = 10,
+                         include_content: bool = False) -> list:
+        """BM25-ranked knowledge recall (more precise than search)."""
+        resp = requests.get(
+            f"{self.hub_url}/evolution/knowledge/recall",
+            params={
+                "query": query, "tags": tags,
+                "top_k": top_k, "include_content": include_content,
+            },
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def fetch_document(self, doc_id: str) -> dict:
+        """Fetch a specific document by ID (selective sync)."""
+        resp = requests.get(
+            f"{self.hub_url}/evolution/knowledge/document/{doc_id}",
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ── Task management (remote agent can create/update tasks) ────────
 
     def create_task(self, task_id: str, name: str = "", description: str = "",
-                    grader: str = "", grader_code: str = "",
+                    grader_skill: str = "",
                     tips: list | None = None, force: bool = False) -> dict:
         """Create or update a task on the Hub (agent-side registration)."""
         resp = requests.post(
             f"{self.hub_url}/evolution/tasks",
             json={
                 "task_id": task_id, "name": name or task_id,
-                "description": description, "grader": grader,
-                "grader_code": grader_code, "tips": tips or [],
+                "description": description, "grader_skill": grader_skill,
+                "tips": tips or [],
                 "created_by": self.terminal_id or "remote-agent",
                 "force": force,
             },
@@ -182,3 +177,239 @@ class CaoBridge:
                             timeout=self._TIMEOUT)
         resp.raise_for_status()
         return resp.json()
+
+    # ── Reports / human feedback ───────────────────────────────────────
+
+    def submit_report(self, task_id: str, findings: list[dict],
+                      auto_score: float | None = None) -> dict:
+        """Submit a vulnerability report; registers the report_id locally.
+
+        ``findings`` is a list of dicts with keys:
+          description (required), severity, file_path, line, category,
+          finding_id (optional, server fills in if blank).
+        """
+        from report_registry import add_report
+
+        agent_id = self.terminal_id or "anonymous"
+        resp = requests.post(
+            f"{self.hub_url}/evolution/{task_id}/reports",
+            json={
+                "agent_id": agent_id,
+                "terminal_id": agent_id,
+                "findings": findings,
+                "auto_score": auto_score,
+            },
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rid = data.get("report_id", "")
+        if rid:
+            add_report(rid, task_id=task_id, source="cao")
+        return data
+
+    def fetch_feedbacks(self, task_id: str = "",
+                        template_path: str = "",
+                        output_dir: str = "") -> dict:
+        """Poll the Hub for annotations on pending reports; land results to disk.
+
+        For each pending report (optionally filtered by task_id) whose
+        status on the Hub is ``annotated``, writes a
+        ``<reports_dir>/<report_id>.result`` file and updates the registry.
+
+        If any new annotations were fetched, renders the feedback markdown
+        from ``template_path`` into ``<output_dir>/evolve_from_feedback.md``.
+
+        Returns
+        -------
+        dict
+            ``feedback_md_path``: str (empty if nothing fetched),
+            ``fetched``: list of report_id,
+            ``pending``: list of report_id still awaiting annotation,
+            ``result_files``: list of absolute paths to new .result files.
+        """
+        import json as _json
+        from report_registry import list_pending, mark_annotated, reports_dir
+
+        pending = list_pending(task_id=task_id or None, source="cao")
+        if not pending:
+            return {"feedback_md_path": "", "fetched": [],
+                    "pending": [], "result_files": []}
+
+        rdir = reports_dir()
+        fetched: list[dict] = []
+        still_pending: list[str] = []
+        result_files: list[str] = []
+
+        for entry in pending:
+            rid = entry["report_id"]
+            tid = entry["task_id"]
+            try:
+                r = requests.get(
+                    f"{self.hub_url}/evolution/{tid}/reports/{rid}/result",
+                    timeout=self._TIMEOUT,
+                )
+            except requests.RequestException as exc:
+                logger.warning("fetch %s failed: %s", rid, exc)
+                still_pending.append(rid)
+                continue
+
+            if r.status_code == 404:
+                # Not yet annotated (or does not exist server-side).
+                still_pending.append(rid)
+                continue
+            if not r.ok:
+                logger.warning("fetch %s returned %s", rid, r.status_code)
+                still_pending.append(rid)
+                continue
+
+            payload = r.json()
+            out = rdir / f"{rid}.result"
+            out.write_text(_json.dumps(payload, indent=2, ensure_ascii=False))
+            mark_annotated(rid, str(out))
+            result_files.append(str(out))
+            fetched.append({
+                "report_id": rid,
+                "task_id": tid,
+                "result_path": str(out),
+                "payload": payload,
+            })
+
+        if not fetched:
+            return {"feedback_md_path": "", "fetched": [],
+                    "pending": still_pending, "result_files": []}
+
+        md_path = self._render_feedback_md(
+            fetched=fetched,
+            template_path=template_path,
+            output_dir=output_dir,
+        )
+        return {
+            "feedback_md_path": str(md_path) if md_path else "",
+            "fetched": [f["report_id"] for f in fetched],
+            "pending": still_pending,
+            "result_files": result_files,
+        }
+
+    def _render_feedback_md(self, fetched: list[dict],
+                            template_path: str,
+                            output_dir: str) -> Path | None:
+        """Render the feedback markdown from a template.
+
+        Search order for template:
+          1. explicit ``template_path`` arg
+          2. ``$CAO_FEEDBACK_TEMPLATE``
+          3. ``~/.config/opencode/skills/feedback-fetch/templates/evolve_from_feedback.md``
+          4. ``<repo>/evo-skills/feedback-fetch/templates/evolve_from_feedback.md``
+             (dev layout — sibling of cao-bridge/)
+        """
+        import json as _json
+        import os as _os
+
+        candidates: list[Path] = []
+        if template_path:
+            candidates.append(Path(template_path).expanduser())
+        env_tpl = _os.environ.get("CAO_FEEDBACK_TEMPLATE", "")
+        if env_tpl:
+            candidates.append(Path(env_tpl).expanduser())
+        candidates.append(
+            Path.home() / ".config" / "opencode" / "skills"
+            / "feedback-fetch" / "templates" / "evolve_from_feedback.md"
+        )
+        candidates.append(
+            Path(__file__).resolve().parent.parent
+            / "evo-skills" / "feedback-fetch"
+            / "templates" / "evolve_from_feedback.md"
+        )
+
+        tpl_file = next((p for p in candidates if p.is_file()), None)
+        if tpl_file is None:
+            logger.warning("no feedback template found, tried: %s", candidates)
+            return None
+
+        template = tpl_file.read_text(encoding="utf-8")
+
+        task_ids = sorted({f["task_id"] for f in fetched})
+        report_ids = [f["report_id"] for f in fetched]
+        entries_md = "\n".join(
+            f"- **{f['report_id']}** (task `{f['task_id']}`) → `{f['result_path']}`"
+            for f in fetched
+        )
+        payloads_json = _json.dumps(
+            [{"report_id": f["report_id"], "task_id": f["task_id"],
+              "result": f["payload"]} for f in fetched],
+            indent=2, ensure_ascii=False,
+        )
+        rendered = (
+            template
+            .replace("{task_ids}", ", ".join(task_ids))
+            .replace("{report_ids}", ", ".join(report_ids))
+            .replace("{fetched_count}", str(len(fetched)))
+            .replace("{entries_markdown}", entries_md)
+            .replace("{payloads_json}", payloads_json)
+        )
+
+        out_dir = Path(output_dir).expanduser() if output_dir else Path.cwd()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "evolve_from_feedback.md"
+        out_path.write_text(rendered, encoding="utf-8")
+        logger.info("rendered feedback md → %s", out_path)
+        return out_path
+
+    # ── Git sync (agent-side clone at ~/.cao-evolution-client/) ────────
+
+    def sync_repo(self, remote_url: str = "") -> Path:
+        """Clone or pull the Hub's evolution repo to ~/.cao-evolution-client/.
+
+        Call at session start.  Returns the local clone path.
+        """
+        from git_sync import init_client_repo
+        url = remote_url or self._git_remote
+        return init_client_repo(url or None)
+
+    def pull_repo(self) -> bool:
+        """Pull latest changes from the remote evolution repo."""
+        from git_sync import pull
+        return pull()
+
+    def push_repo(self, message: str = "agent sync") -> bool:
+        """Push any local agent-side changes back to the remote."""
+        from git_sync import push
+        return push(message=message)
+
+    def client_skills_dir(self) -> Path:
+        """Return the skills directory inside the agent-side clone."""
+        from git_sync import skills_dir
+        return skills_dir()
+
+    def client_notes_dir(self) -> Path:
+        """Return the notes directory inside the agent-side clone."""
+        from git_sync import notes_dir
+        return notes_dir()
+
+    def client_tasks_dir(self) -> Path:
+        """Return the tasks directory inside the agent-side clone."""
+        from git_sync import tasks_dir
+        return tasks_dir()
+
+    def pull_skills_to_local(self, target_dir: Path) -> list[str]:
+        """Copy skills from the git clone into the agent's local skills dir.
+
+        Returns list of skill names synced.
+        """
+        import shutil
+        src = self.client_skills_dir()
+        if not src.exists():
+            return []
+        target_dir.mkdir(parents=True, exist_ok=True)
+        synced: list[str] = []
+        for child in src.iterdir():
+            if child.is_dir() and (child / "SKILL.md").exists():
+                dest = target_dir / child.name
+                dest.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(child, dest, dirs_exist_ok=True)
+                synced.append(child.name)
+                logger.debug("Synced skill %s → %s", child.name, dest)
+        if synced:
+            logger.info("Synced %d skills to %s", len(synced), target_dir)
+        return synced

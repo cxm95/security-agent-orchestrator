@@ -7,12 +7,15 @@ All routes prefixed with /evolution/.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml as _yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -21,6 +24,7 @@ from cli_agent_orchestrator.evolution.checkpoint import (
     init_checkpoint_repo,
     shared_dir,
 )
+from cli_agent_orchestrator.evolution.recall_index import RecallIndex
 from cli_agent_orchestrator.evolution.attempts import (
     compare_to_history,
     count_evals_since_improvement,
@@ -43,7 +47,46 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/evolution", tags=["evolution"])
 
-EVOLUTION_DIR = str(Path.home() / ".cao-evolution")
+EVOLUTION_DIR = os.environ.get("CAO_EVOLUTION_DIR", str(Path.home() / ".cao-evolution"))
+
+# Singleton recall index — built once at startup, updated on each checkpoint
+_recall_index: RecallIndex | None = None
+_recall_lock = threading.Lock()
+
+
+def get_recall_index() -> RecallIndex:
+    """Return the module-level RecallIndex, building if needed (thread-safe)."""
+    global _recall_index
+    if _recall_index is None:
+        with _recall_lock:
+            if _recall_index is None:  # double-check after lock
+                idx = RecallIndex(EVOLUTION_DIR)
+                idx.build()
+                _recall_index = idx
+    return _recall_index
+
+
+def _on_checkpoint_commit(evolution_dir: str, changed_files: list[str]) -> None:
+    """Called after each checkpoint commit to update the recall index."""
+    global _recall_index
+    with _recall_lock:
+        if _recall_index is not None:
+            knowledge_files = [
+                f for f in changed_files
+                if f.startswith("notes/") or f.startswith("skills/")
+            ]
+            if knowledge_files:
+                _recall_index.update_incremental(knowledge_files)
+
+
+def _checkpoint_with_recall(
+    agent_id: str = "hub", message: str = "checkpoint"
+) -> str | None:
+    """Wrapper: checkpoint() + recall index update callback."""
+    return checkpoint(
+        EVOLUTION_DIR, agent_id, message,
+        on_commit=_on_checkpoint_commit,
+    )
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -61,8 +104,7 @@ class TaskCreate(BaseModel):
     task_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$")
     name: str = ""
     description: str = ""
-    grader: str = Field(default="", pattern=r"^([a-zA-Z0-9_\-./]*\.py)?$")  # safe path, must end .py
-    grader_code: str = ""  # inline grader code (legacy, written as grader.py)
+    grader_skill: str = Field(default="", pattern=r"^[a-zA-Z0-9_-]*$")  # evo-skill name for grading
     tips: list[str] = []
     eval_data_path: str = ""
     created_by: str = ""
@@ -148,37 +190,36 @@ async def create_task(body: TaskCreate) -> dict[str, Any]:
     # On upsert, merge with existing YAML (agent-side fields override, others preserved)
     existing: dict[str, Any] = {}
     if exists and body.force:
-        for line in (task_dir / "task.yaml").read_text().splitlines():
-            if ":" in line and not line.startswith(" "):
-                key, val = line.split(":", 1)
-                existing[key.strip()] = val.strip()
+        try:
+            existing = _yaml.safe_load((task_dir / "task.yaml").read_text()) or {}
+        except Exception:
+            existing = {}
 
     task_dir.mkdir(parents=True, exist_ok=True)
     name = body.name or existing.get("name") or body.task_id
     desc = body.description or existing.get("description", "")
-    grader = body.grader or existing.get("grader", "")
+    grader_skill = body.grader_skill or existing.get("grader_skill", "")
     created_by = body.created_by or existing.get("created_by", "")
     eval_data = body.eval_data_path or existing.get("eval_data_path", "")
 
-    yaml_lines = [f"name: {name}", f"description: {desc}"]
-    if grader:
-        yaml_lines.append(f"grader: {grader}")
+    task_data: dict[str, Any] = {"name": name, "description": desc}
+    if grader_skill:
+        task_data["grader_skill"] = grader_skill
     if body.tips:
-        yaml_lines.append("tips:")
-        for tip in body.tips:
-            yaml_lines.append(f"  - \"{tip}\"")
+        task_data["tips"] = list(body.tips)
     if eval_data:
-        yaml_lines.append(f"eval_data_path: {eval_data}")
+        task_data["eval_data_path"] = eval_data
     if created_by:
-        yaml_lines.append(f"created_by: {created_by}")
-    yaml_lines.append(f"last_updated: {datetime.now(timezone.utc).isoformat()}")
-    (task_dir / "task.yaml").write_text("\n".join(yaml_lines) + "\n")
-    if body.grader_code:
-        (task_dir / "grader.py").write_text(body.grader_code)
+        task_data["created_by"] = created_by
+    task_data["last_updated"] = datetime.now(timezone.utc).isoformat()
+    (task_dir / "task.yaml").write_text(
+        _yaml.dump(task_data, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    )
 
     action = "update" if exists else "create"
-    checkpoint(EVOLUTION_DIR, created_by or "hub", f"{action} task {body.task_id}")
-    return {"task_id": body.task_id, "created": not exists, "updated": exists}
+    _checkpoint_with_recall(created_by or "hub", f"{action} task {body.task_id}")
+    return {"task_id": body.task_id, "created": not exists, "updated": exists,
+            "grader_skill": grader_skill}
 
 
 @router.get("/tasks")
@@ -203,43 +244,18 @@ async def get_task(task_id: str) -> dict[str, Any]:
         raise HTTPException(404, f"Task '{task_id}' not found")
 
     info: dict[str, Any] = {"task_id": task_id}
-    info["task_yaml"] = (task_dir / "task.yaml").read_text()
-    info["has_grader"] = (task_dir / "grader.py").exists()
+    raw_yaml = (task_dir / "task.yaml").read_text()
+    info["task_yaml"] = raw_yaml
+    # Parse grader_skill from task.yaml for convenience
+    try:
+        parsed = _yaml.safe_load(raw_yaml) or {}
+    except Exception:
+        parsed = {}
+    info["grader_skill"] = parsed.get("grader_skill", "")
     attempts = read_attempts(EVOLUTION_DIR, task_id)
     info["attempt_count"] = len(attempts)
     info["best_score"] = get_best_score(EVOLUTION_DIR, task_id)
     return info
-
-
-@router.get("/{task_id}/grader")
-async def get_grader(task_id: str) -> dict[str, str]:
-    _validate_path_id(task_id, "task_id")
-    sd = shared_dir(EVOLUTION_DIR)
-    task_dir = sd / "tasks" / task_id
-
-    # Check inline grader.py first (legacy)
-    inline_grader = task_dir / "grader.py"
-    if inline_grader.exists():
-        return {"task_id": task_id, "grader_code": inline_grader.read_text(), "source": "inline"}
-
-    # Check grader reference in task.yaml
-    yaml_path = task_dir / "task.yaml"
-    if yaml_path.exists():
-        yaml_content = yaml_path.read_text()
-        for line in yaml_content.splitlines():
-            if line.startswith("grader:"):
-                ref = line.split(":", 1)[1].strip()
-                if ref:
-                    # Prevent path traversal
-                    graders_root = (sd / "graders").resolve()
-                    ref_path = (sd / "graders" / ref).resolve()
-                    if not ref_path.is_relative_to(graders_root):
-                        raise HTTPException(400, f"Invalid grader reference: {ref}")
-                    if ref_path.exists():
-                        return {"task_id": task_id, "grader_code": ref_path.read_text(), "source": f"graders/{ref}"}
-                    raise HTTPException(404, f"Referenced grader '{ref}' not found in graders/")
-
-    raise HTTPException(404, f"No grader for task '{task_id}'")
 
 
 # ── Score reporting (core) ───────────────────────────────────────────────
@@ -270,7 +286,7 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
     )
 
     write_attempt(EVOLUTION_DIR, attempt)
-    sha = checkpoint(EVOLUTION_DIR, body.agent_id, f"score {task_id}: {body.score}")
+    sha = _checkpoint_with_recall(body.agent_id, f"score {task_id}: {body.score}")
     if sha:
         attempt.shared_state_hash = sha
         write_attempt(EVOLUTION_DIR, attempt)  # persist the hash
@@ -374,7 +390,7 @@ async def create_note(body: NoteCreate) -> dict[str, Any]:
     fm_lines.append("---")
 
     path.write_text("\n".join(fm_lines) + "\n" + body.content + "\n")
-    checkpoint(EVOLUTION_DIR, body.agent_id or "hub", f"note: {body.title}")
+    _checkpoint_with_recall(body.agent_id or "hub", f"note: {body.title}")
 
     return {"filename": filename, "path": str(path)}
 
@@ -421,7 +437,7 @@ async def create_skill(body: SkillCreate) -> dict[str, Any]:
     fm_lines.append("---")
 
     path.write_text("\n".join(fm_lines) + "\n" + body.content + "\n")
-    checkpoint(EVOLUTION_DIR, body.agent_id or "hub", f"skill: {body.name}")
+    _checkpoint_with_recall(body.agent_id or "hub", f"skill: {body.name}")
 
     return {"name": body.name, "path": str(path)}
 
@@ -450,7 +466,7 @@ async def list_skills() -> list[dict[str, Any]]:
 
 @router.get("/knowledge/search")
 async def search_knowledge(
-    query: str = Query(..., min_length=1),
+    query: str = Query(..., min_length=1, max_length=500),
     tags: str = Query("", description="Comma-separated tags"),
     top_k: int = Query(10, ge=1, le=50),
 ) -> list[dict[str, Any]]:
@@ -529,7 +545,7 @@ async def submit_report(task_id: str, body: ReportSubmit) -> dict[str, Any]:
         submitted_at=datetime.now(timezone.utc).isoformat(),
     )
     write_report(EVOLUTION_DIR, report)
-    checkpoint(EVOLUTION_DIR, body.agent_id, f"report {report_id} for {task_id}")
+    _checkpoint_with_recall(body.agent_id, f"report {report_id} for {task_id}")
     return {"report_id": report_id, "finding_count": len(findings)}
 
 
@@ -586,7 +602,7 @@ async def annotate_report(task_id: str, report_id: str, body: AnnotateBody) -> d
     result_dir.mkdir(parents=True, exist_ok=True)
     (result_dir / f"{report_id}.result").write_text(_json.dumps(result_data, indent=2))
 
-    checkpoint(EVOLUTION_DIR, "human", f"annotate report {report_id}")
+    _checkpoint_with_recall("human", f"annotate report {report_id}")
     return {"status": "annotated", "report_id": report_id}
 
 
@@ -680,3 +696,66 @@ async def set_heartbeat_config(agent_id: str, body: dict[str, Any]) -> dict[str,
 def ensure_evolution_repo() -> None:
     """Initialize the shared evolution repo if it doesn't exist yet."""
     init_checkpoint_repo(EVOLUTION_DIR)
+
+
+# ── Recall (BM25-based knowledge search) ─────────────────────────────────
+
+@router.get("/knowledge/recall")
+async def recall_knowledge(
+    query: str = Query(..., min_length=1, max_length=500),
+    tags: str = Query("", description="Comma-separated tags to filter"),
+    top_k: int = Query(10, ge=1, le=50),
+    include_content: bool = Query(
+        False, description="Include full document content in results"
+    ),
+) -> list[dict[str, Any]]:
+    """BM25-ranked knowledge recall over notes and skills.
+
+    More precise than /knowledge/search — results ranked by relevance.
+    Set include_content=True to get full document body (selective sync).
+    """
+    index = get_recall_index()
+    tag_filter = (
+        {t.strip().lower() for t in tags.split(",") if t.strip()}
+        if tags else None
+    )
+    results = index.query(query, tags=tag_filter, top_k=top_k)
+    out = []
+    for r in results:
+        d = r.to_dict()
+        if include_content:
+            doc = index.get_document(r.doc_id)
+            d["content"] = doc.body if doc else ""
+        out.append(d)
+    return out
+
+
+@router.get("/knowledge/document/{doc_id:path}")
+async def get_knowledge_document(doc_id: str) -> dict[str, Any]:
+    """Fetch a specific document by ID (selective sync).
+
+    doc_id format: 'note:<stem>' or 'skill:<name>'.
+    """
+    if not doc_id or ".." in doc_id:
+        raise HTTPException(400, "Invalid doc_id")
+    index = get_recall_index()
+    doc = index.get_document(doc_id)
+    if doc is None:
+        raise HTTPException(404, f"Document not found: {doc_id}")
+    return {
+        "doc_id": doc.doc_id,
+        "type": doc.doc_type,
+        "path": doc.path,
+        "title": doc.title,
+        "tags": doc.tags,
+        "meta": doc.meta,
+        "content": doc.body,
+    }
+
+
+@router.post("/knowledge/recall/rebuild")
+async def rebuild_recall_index() -> dict[str, Any]:
+    """Force full rebuild of the recall index."""
+    index = get_recall_index()
+    count = index.build()
+    return {"status": "ok", "documents_indexed": count}

@@ -1,11 +1,11 @@
 # Development Guide
 
-This guide covers setting up your development environment and running tests for the CLI Agent Orchestrator project.
+This guide covers setting up your development environment and running tests for the Security Agent Orchestrator (SecAgentNet) project.
 
 ## Prerequisites
 
 - Python 3.10 or higher
-- [uv](https://docs.astral.sh/uv/) - Fast Python package installer and resolver
+- [uv](https://docs.astral.sh/uv/) — Fast Python package installer and resolver
 - Git
 - tmux 3.2+ (for running the orchestrator and integration tests)
 
@@ -14,8 +14,8 @@ This guide covers setting up your development environment and running tests for 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/awslabs/cli-agent-orchestrator.git
-cd cli-agent-orchestrator/
+git clone <repository-url>
+cd security-agent-orchestrator/
 ```
 
 ### 2. Install Dependencies
@@ -37,8 +37,129 @@ This command:
 # Check that the CLI is available
 uv run cao --help
 
-# Run a quick test to ensure everything is working
-uv run pytest test/providers/test_q_cli_unit.py -v -k "test_initialization"
+# Run the evolution tests as a quick smoke test
+uv run pytest test/evolution/ -v --tb=short -q
+```
+
+## Running Tests
+
+Test paths are configured in `pyproject.toml` (`testpaths = ["test"]`), so pytest discovers all tests automatically.
+
+### Test Directory Structure
+
+```
+test/
+├── api/                    API endpoint tests
+├── cli/                    CLI command tests
+├── clients/                Client tests (database, tmux)
+├── e2e/                    E2E tests (require running Hub server + authenticated providers)
+├── evolution/              Evolution & co-evolution tests (255 tests)
+│   ├── test_evolution.py           Core types, attempts, checkpoint
+│   ├── test_evolution_api.py       Evolution API endpoints
+│   ├── test_evolution_grader_mcp.py MCP tools + grader
+│   ├── test_heartbeat.py           Heartbeat trigger + prompt rendering
+│   ├── test_skill_evolution.py     Skill evolution integration
+│   ├── test_skill_sync.py          Skill synchronization
+│   ├── test_bridge_evolution.py    Bridge protocol
+│   ├── test_claude_code_bridge.py  Claude Code bridge files
+│   ├── test_e2e_evolution.py       E2E evolution (requires running server)
+│   ├── test_hermes_plugin.py       Hermes plugin
+│   ├── test_remote.py              Remote provider
+│   └── test_reports.py             Report generation
+├── mcp_server/             MCP server tests
+├── models/                 Model tests
+├── providers/              Provider tests (⚠ some broken — see note below)
+├── services/               Service tests
+└── utils/                  Utility tests
+```
+
+### ⚠ Broken Provider Tests
+
+Eight test files in `test/providers/` reference upstream provider modules that have been removed from this fork. They will fail with import errors:
+
+- `test_gemini_cli_unit.py`
+- `test_kimi_cli_unit.py`
+- `test_kiro_cli_unit.py`
+- `test_kiro_cli_integration.py`
+- `test_q_cli_unit.py`
+- `test_q_cli_integration.py`
+- `test_script_provider_unit.py`
+- `test_permission_prompt_detection.py`
+
+These are kept for reference. Exclude them when running the full suite (see below).
+
+### Evolution Tests (Recommended Starting Point)
+
+The `test/evolution/` directory contains 255 tests covering the evolution and co-evolution system. These are self-contained, fast, and the most actively developed:
+
+```bash
+# Run all evolution tests
+python3 -m pytest test/evolution/ -v
+
+# Run a specific evolution test file
+python3 -m pytest test/evolution/test_heartbeat.py -v
+
+# Run with keyword filter
+python3 -m pytest test/evolution/ -v -k "grader"
+```
+
+### All Working Tests
+
+Run the full suite while excluding the broken upstream provider tests:
+
+```bash
+python3 -m pytest test/ \
+  --ignore=test/providers/test_gemini_cli_unit.py \
+  --ignore=test/providers/test_kimi_cli_unit.py \
+  --ignore=test/providers/test_kiro_cli_unit.py \
+  --ignore=test/providers/test_kiro_cli_integration.py \
+  --ignore=test/providers/test_q_cli_unit.py \
+  --ignore=test/providers/test_q_cli_integration.py \
+  --ignore=test/providers/test_script_provider_unit.py \
+  --ignore=test/providers/test_permission_prompt_detection.py \
+  -v
+```
+
+### E2E Tests
+
+E2E tests require a running Hub server, authenticated CLI tools, and tmux:
+
+```bash
+# Standard E2E tests
+python3 -m pytest test/e2e/ -v
+
+# Evolution E2E tests (requires running Hub — see below)
+python3 -m pytest test/evolution/test_e2e_evolution.py -v
+```
+
+### Coverage
+
+```bash
+# Coverage for evolution tests
+python3 -m pytest test/evolution/ --cov=src --cov-report=term-missing -v
+
+# HTML coverage report (open htmlcov/index.html)
+python3 -m pytest test/evolution/ --cov=src --cov-report=html
+```
+
+## Hub Server for Development
+
+The Hub server (`cao-server`) exposes the REST API on port 9889. You need it running for E2E tests and Web UI development.
+
+```bash
+# Start the Hub server
+cao-server                    # Starts on http://127.0.0.1:9889
+
+# Or with uvicorn directly (useful for auto-reload during development)
+uvicorn cli_agent_orchestrator.api.main:app --host 0.0.0.0 --port 9889 --reload
+```
+
+To run E2E evolution tests against a live server:
+
+```bash
+cao-server &                  # Start Hub in the background
+python3 -m pytest test/evolution/test_e2e_evolution.py -v
+kill %1                       # Stop the Hub when done
 ```
 
 ## Web UI Development
@@ -59,89 +180,9 @@ npm run build      # Outputs to web/dist/
 
 The Vite dev server proxies API calls to the backend at `localhost:9889`. Make sure `cao-server` is running before starting the frontend.
 
-## Running Tests
-
-### Unit Tests
-
-Unit tests are fast and use mocked dependencies:
-
-```bash
-# Run all unit tests (excludes E2E and integration tests)
-uv run pytest test/ --ignore=test/e2e --ignore=test/providers/test_q_cli_integration.py -v
-
-# Run with coverage report
-uv run pytest test/ --ignore=test/e2e --cov=src --cov-report=term-missing -v
-
-# Run specific test file
-uv run pytest test/providers/test_claude_code_unit.py -v
-
-# Run specific test class
-uv run pytest test/providers/test_codex_provider_unit.py::TestCodexBuildCommand -v
-
-# Run OpenCode provider tests (60 tests)
-uv run pytest test/providers/test_opencode_provider_unit.py -v
-
-# Run Script provider tests (26 tests)
-uv run pytest test/providers/test_script_provider_unit.py -v
-```
-
-### Integration Tests
-
-Integration tests require the provider CLI to be installed and authenticated:
-
-```bash
-# Run Q CLI integration tests (requires Q CLI setup)
-uv run pytest test/providers/test_q_cli_integration.py -v
-
-# Skip integration tests
-uv run pytest test/providers/ -m "not integration" -v
-```
-
-### E2E Tests
-
-E2E tests require a running CAO server, authenticated CLI tools, and tmux:
-
-```bash
-# Run all E2E tests
-uv run pytest -m e2e test/e2e/ -v
-
-# Run E2E tests for a specific provider
-uv run pytest -m e2e test/e2e/ -v -k codex
-```
-
-### Run All Tests
-
-```bash
-# Run all tests
-uv run pytest -v
-
-# Run tests with coverage for all modules
-uv run pytest --cov=src --cov-report=term-missing -v
-
-# Run tests in parallel (faster)
-uv run pytest -n auto
-```
-
-### Test Markers
-
-Tests are organized with pytest markers:
-
-```bash
-# Run only integration tests
-uv run pytest -m integration -v
-
-# Skip slow tests
-uv run pytest -m "not slow" -v
-
-# Run only async tests
-uv run pytest -m asyncio -v
-```
-
 ## Code Quality
 
 ### Formatting
-
-The project uses `black` for code formatting:
 
 ```bash
 # Format all Python files
@@ -153,8 +194,6 @@ uv run black --check src/ test/
 
 ### Import Sorting
 
-The project uses `isort` for organizing imports:
-
 ```bash
 # Sort imports
 uv run isort src/ test/
@@ -165,122 +204,31 @@ uv run isort --check-only src/ test/
 
 ### Type Checking
 
-The project uses `mypy` for static type checking:
-
 ```bash
-# Run type checker
 uv run mypy src/
 ```
 
 ### Run All Quality Checks
 
 ```bash
-# Format, sort imports, type check, and run tests
 uv run black src/ test/
 uv run isort src/ test/
 uv run mypy src/
-uv run pytest -v
+python3 -m pytest test/evolution/ -v
 ```
 
 ## Development Workflow
 
-### 1. Create a Feature Branch
-
-```bash
-git checkout -b feature/your-feature-name
-```
-
-### 2. Make Changes
-
-Edit code in `src/cli_agent_orchestrator/`
-
-### 3. Add Tests
-
-Add or update tests in `test/`
-
-### 4. Run Tests Locally
-
-```bash
-# Run unit tests (fast, excludes E2E and integration)
-uv run pytest test/ --ignore=test/e2e --ignore=test/providers/test_q_cli_integration.py -v
-
-# Run all tests with coverage
-uv run pytest test/ --ignore=test/e2e --cov=src --cov-report=term-missing -v
-```
-
-### 5. Check Code Quality
-
-```bash
-uv run black src/ test/
-uv run isort src/ test/
-uv run mypy src/
-```
-
-### 6. Commit and Push
-
-```bash
-git add .
-git commit -m "Add feature: description"
-git push origin feature/your-feature-name
-```
-
-### 7. Create Pull Request
-
-Create a pull request on GitHub. CI will automatically run tests and code quality checks.
-
-## CI/CD
-
-### Comprehensive Workflow (`ci.yml`)
-
-Runs on all pushes to `main` and all PRs targeting `main`:
-- **Unit tests**: Python 3.10, 3.11, 3.12 matrix with coverage
-- **Code quality**: black, isort, mypy
-- **Security scan**: Trivy vulnerability scanner (CRITICAL/HIGH)
-- **Dependency review**: License and vulnerability checks on PRs
-
-### Provider-Specific Workflows (path-triggered)
-
-Each provider has a dedicated workflow that runs only when its files change:
-
-| Workflow | Tests | Trigger Paths |
-|---|---|---|
-| `test-codex-provider.yml` | `test_codex_provider_unit.py` | `providers/codex.py`, `test/providers/**` |
-| `test-claude-code-provider.yml` | `test_claude_code_unit.py` | `providers/claude_code.py`, `test/providers/**` |
-| `test-kiro-cli-provider.yml` | `test_kiro_cli_unit.py` | `providers/kiro_cli.py`, `test/providers/**` |
-| `test-q-cli-provider.yml` | `test_q_cli_unit.py` | `providers/q_cli.py`, `test/providers/**` |
-| `test-opencode-provider.yml` | `test_opencode_provider_unit.py` | `providers/opencode.py`, `test/providers/**` |
-| `test-script-provider.yml` | `test_script_provider_unit.py` | `providers/script.py`, `test/providers/**` |
-
-Each includes unit tests (Python 3.10/3.11/3.12) and code quality checks (black, isort, mypy).
-
-## Working with the Q CLI Provider
-
-### Regenerate Test Fixtures
-
-If Q CLI output format changes:
-
-```bash
-uv run python test/providers/fixtures/generate_fixtures.py
-```
-
-### Test Against Real Q CLI
-
-```bash
-# Ensure Q CLI is available
-which q
-
-# Ensure Q CLI is authenticated
-q status
-
-# Run integration tests
-uv run pytest test/providers/test_q_cli_integration.py -v
-```
+1. Create a feature branch: `git checkout -b feature/your-feature-name`
+2. Make changes in `src/cli_agent_orchestrator/`
+3. Add or update tests in `test/` (prefer `test/evolution/` for evolution work)
+4. Run tests: `python3 -m pytest test/evolution/ -v`
+5. Check code quality: `uv run black src/ test/ && uv run isort src/ test/`
+6. Commit and push
 
 ## Troubleshooting
 
 ### Import Errors
-
-If you encounter import errors when running tests:
 
 ```bash
 # Re-sync dependencies
@@ -295,71 +243,59 @@ uv sync
 
 ```bash
 # Run with verbose output
-uv run pytest -vv
+python3 -m pytest -vv
 
 # Run a specific failing test
-uv run pytest test/path/to/test.py::test_name -vv
+python3 -m pytest test/path/to/test.py::test_name -vv
 
 # Show print statements
-uv run pytest -s
+python3 -m pytest -s
 ```
 
-### Coverage Issues
+### Hub Server Won't Start
 
 ```bash
-# Generate detailed coverage report
-uv run pytest --cov=src --cov-report=html
-# Open htmlcov/index.html in your browser
+# Check if port 9889 is already in use
+lsof -i :9889
 
-# Show missing lines
-uv run pytest --cov=src --cov-report=term-missing
+# Start with debug logging
+uvicorn cli_agent_orchestrator.api.main:app --host 0.0.0.0 --port 9889 --log-level debug
 ```
 
-## Adding New Dependencies
-
-### Runtime Dependencies
+## Adding Dependencies
 
 ```bash
-# Add a new runtime dependency
-uv add package-name
-
-# Add with version constraint
-uv add "package-name>=1.0.0"
-```
-
-### Development Dependencies
-
-```bash
-# Add a new development dependency
-uv add --dev package-name
+uv add package-name              # Runtime dependency
+uv add "package-name>=1.0.0"     # With version constraint
+uv add --dev package-name        # Development dependency
 ```
 
 ## Project Structure
 
 ```
-cli-agent-orchestrator/
+security-agent-orchestrator/
 ├── src/
 │   └── cli_agent_orchestrator/     # Main source code
-│       ├── api/                    # FastAPI server
+│       ├── api/                    # FastAPI server (Hub)
 │       ├── cli/                    # CLI commands
 │       ├── clients/                # Database and tmux clients
 │       ├── mcp_server/             # MCP server implementation
 │       ├── models/                 # Data models
-│       ├── providers/              # Agent providers (Q CLI, Claude Code, OpenCode, Script, etc.)
+│       ├── providers/              # Agent providers
 │       ├── services/               # Business logic services
 │       └── utils/                  # Utility functions
-├── test/                           # Test suite (1100+ tests, 92% coverage)
+├── test/                           # Unified test suite
+│   ├── evolution/                 # Evolution & co-evolution tests (255 tests)
 │   ├── api/                       # API endpoint tests
 │   ├── cli/                       # CLI command tests
-│   ├── clients/                   # Client tests (database, tmux)
-│   ├── e2e/                       # End-to-end tests (require running CAO server)
+│   ├── clients/                   # Client tests
+│   ├── e2e/                       # End-to-end tests
 │   ├── mcp_server/                # MCP server tests
 │   ├── models/                    # Data model tests
-│   ├── providers/                 # Provider tests (unit + integration)
+│   ├── providers/                 # Provider tests (some broken — see note)
 │   ├── services/                  # Service layer tests
 │   └── utils/                     # Utility tests
-├── docs/                           # Documentation
-├── examples/                       # Example workflows
+├── web/                            # React + Vite + Tailwind frontend
 ├── pyproject.toml                  # Project configuration
 └── uv.lock                         # Locked dependencies
 ```
@@ -367,7 +303,5 @@ cli-agent-orchestrator/
 ## Resources
 
 - [Project README](README.md)
-- [Test Documentation](test/README.md)
-- [Contributing Guidelines](CONTRIBUTING.md)
 - [uv Documentation](https://docs.astral.sh/uv/)
 - [pytest Documentation](https://docs.pytest.org/)

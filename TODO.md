@@ -1,1 +1,0 @@
-opencode provider: copilot --resume=afc32beb-fd74-438f-b8e3-04ab72bf05b4 at /home/ubuntu/projects/huntdex-cao/cli-agent-orchestrator-v1

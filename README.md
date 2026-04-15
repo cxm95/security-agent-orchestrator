@@ -1,721 +1,247 @@
-# CLI Agent Orchestrator
+# CLI Agent Orchestrator (CAO)
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/awslabs/cli-agent-orchestrator)
+> Fork of [awslabs/cli-agent-orchestrator](https://github.com/awslabs/cli-agent-orchestrator), extended with a CORAL-inspired **co-evolution system**. CAO orchestrates multiple AI coding agents in tmux terminals (or remotely via HTTP bridges) and adds a continuous improvement loop: agents report scores, the Hub detects plateaus, and heartbeat prompts trigger reflection, consolidation, pivots, and skill evolution — all synchronized through a git-backed knowledge repository.
 
-CLI Agent Orchestrator(CAO, pronounced as "kay-oh"), is a lightweight orchestration system for managing multiple AI agent sessions in tmux terminals. Enables Multi-agent collaboration via MCP server.
+## Architecture Overview
 
-## Recent Changes
-
-### New Features
-
-- **Remote Agent Support** — New `RemoteProvider` enables CAO to orchestrate remote AI agents (OpenCode, Claude Code, Codex, etc.) running on separate machines. Remote agents connect via HTTP bridge — no tmux required on the Hub side. Three bridge variants provided: **MCP server** (`cao_bridge_mcp.py`), **Skill** (`SKILL.md`), and **OpenCode Plugin** (`cao-bridge.ts`). See [Remote Agents](#remote-agents) for details.
-- **OpenCode Provider** — Full provider for the [OpenCode](https://github.com/opencode-ai/opencode) TUI AI coding agent, including lifecycle management, alternate-screen buffer parsing for status detection, response extraction, session persistence (`ses_xxx` resumption), auto-approve mode, and model selection. See [Provider Features](#provider-features) for details.
-- **Script Provider** — Lightweight provider for running arbitrary shell scripts/commands in tmux sessions. Detects completion via shell prompt, strips invocation lines, supports custom environment variables and Ctrl-C interruption. See [Provider Features → Script Provider](#script-provider).
-- **Huntdex Provider** — Provider for delegating tasks to a Huntdex API server via `copilot-ui.py` REPL with status detection and output extraction.
-- **Clother MiniMax CN Provider** — Provider subclassing Claude Code that replaces the `claude` binary with `clother-minimax-cn`.
-- **`cao-mcp-task-context` MCP Server** — New companion FastMCP tool server for structured directory context management in multi-agent phase workflows. Provides tools like `init_session`, `get_workflow`, `prepare_task`, `prepare_phase_context`, `write_task_meta`, and more. See [Context Folders → cao-mcp-task-context](#cao-mcp-task-context).
-- **Context Folder Parameters** — `handoff` and `assign` now accept `global_folder`, `output_folder`, `input_folder`, `input_folders`, `metadata_folder`, and `session_root` parameters, serialized into a `[CAO Context]` JSON header. See [Context Folders](#context-folders).
-- **Provider Override on Handoff/Assign** — New `provider` parameter lets callers override the child terminal's provider type instead of inheriting from the parent. See [Cross-Provider Orchestration](#cross-provider-orchestration).
-- **Configurable Required Context Folders** — Set env var `CAO_REQUIRE_CONTEXT_FOLDERS=true` to make `session_root`, `global_folder`, and `output_folder` required with validation.
-- **Display Name for Tmux Windows** — New `display_name` parameter flows through the API to generate human-readable tmux window names (e.g., `t0-phase1`).
-- **Debug Mode for Handoff** — `handoff` accepts a `debug` flag (default `True`); when `False`, the worker tmux window is deleted after output capture.
-- **Remote/SSE MCP Server Support** — `McpServer` model gains a `url` field for `remote` type servers. Claude Code maps `remote` → `sse`; OpenCode builds native remote config. See [Remote MCP Servers (SSE)](#remote-mcp-servers-sse).
-- **`--initial-prompt-file` CLI Option** — New flag on `cao launch` reads a file and sends its content as the first prompt after the system prompt.
-- **Provider Session ID on Exit** — `exit_terminal` calls `provider.graceful_exit()` to extract provider-specific session IDs (e.g., OpenCode `ses_xxx`) returned in the response.
-- **Base Provider Env Var Support** — `set_env_vars()` and `_apply_env_vars()` added to `BaseProvider` with POSIX validation and `shlex.quote()` escaping. See [Provider Features → Environment Variables](#environment-variables).
-
-### Bug Fixes & Improvements
-
-- **System prompt injection rework** — System prompts are no longer injected via CLI flags (which had shell-escaping issues). Instead, a `[System Prompt]` block is prepended to the first message. See [System Prompt Injection](#system-prompt-injection).
-- **Proxy bypass for localhost API calls** — All internal `requests` calls use `trust_env=False`; Codex/OpenCode unset `HTTP_PROXY`/`HTTPS_PROXY` to prevent external proxies from intercepting localhost traffic.
-- **Handoff header applied to all providers** — `[CAO Handoff]` header is now prepended for all provider types, not just Codex.
-- **Improved assign message format** — Assign suffix uses structured `[CAO Assign]` tag with explicit `send_message` call syntax.
-- **Handoff default timeout raised** — Default timeout increased from 600s to 1800s; max timeout raised from 3600s to 86400s (24h) for long-running workflows.
-- **Wait-for-ready simplified** — Providers now only wait for `IDLE` (not `IDLE | COMPLETED`) before the first message, since system prompts are no longer auto-submitted via CLI flags.
-- **OpenCode COMPLETED regex fix** — Pattern updated to match multi-unit durations (e.g., `3m 20s`) — previously caused false negatives.
-- **OpenCode detect COMPLETED after exit** — If OpenCode's session ID pattern matches (process exited), status now correctly returns `COMPLETED` instead of stalling in `PROCESSING`.
-- **Codex `--full-auto` and `--dangerously-bypass-approvals-and-sandbox`** — Both flags are now included for fully autonomous Codex execution.
-- **Codex tool timeout reduced** — Default MCP `tool_timeout_sec` lowered from 600s to 120s.
-- **Script provider orchestration fixes** — Handoff skips IDLE-wait and message-send for script providers (already running after `initialize()`); `CAO_TERMINAL_ID` env var auto-injected; system prompt no longer sent via stdin.
-- **Terminal listing sort order** — `list_terminals_by_session` sorts by `agent_profile` (NULLs last) for deterministic display order.
-- **Aggregated status badges in Web UI** — Terminal statuses aggregated by count (e.g., "IDLE (3)") instead of one badge per terminal.
-
-## Hierarchical Multi-Agent System
-
-CLI Agent Orchestrator (CAO) implements a hierarchical multi-agent system that enables complex problem-solving through specialized division of CLI Developer Agents.
-
-![CAO Architecture](./docs/assets/cao_architecture.png)
-
-### Key Features
-
-* **Hierarchical orchestration** – CAO's supervisor agent coordinates workflow management and task delegation to specialized worker agents. The supervisor maintains overall project context while agents focus on their domains of expertise.
-* **Session-based isolation** – Each agent operates in isolated tmux sessions, ensuring proper context separation while enabling seamless communication through Model Context Protocol (MCP) servers. This provides both coordination and parallel processing capabilities.
-* **Intelligent task delegation** – CAO automatically routes tasks to appropriate specialists based on project requirements, expertise matching, and workflow dependencies. The system adapts between individual agent work and coordinated team efforts through three orchestration patterns:
-    - **Handoff** - Synchronous task transfer with wait-for-completion
-    - **Assign** - Asynchronous task spawning for parallel execution  
-    - **Send Message** - Direct communication with existing agents
-* **Flexible workflow patterns** – CAO supports both sequential coordination for dependent tasks and parallel processing for independent work streams. This allows optimization of both development speed and quality assurance processes.
-* **Flow - Scheduled runs** – Automated execution of workflows at specified intervals using cron-like scheduling, enabling routine tasks and monitoring workflows to run unattended.
-* **Context preservation** – The supervisor agent provides only necessary context to each worker agent, avoiding context pollution while maintaining workflow coherence.
-* **Direct worker interaction and steering** – Users can interact directly with worker agents to provide additional steering, distinguishing from sub-agents features by allowing real-time guidance and course correction.
-* **Advanced CLI integration** – CAO agents have full access to advanced features of the developer CLI, such as the [sub-agents](https://docs.claude.com/en/docs/claude-code/sub-agents) feature of Claude Code, [Custom Agent](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-custom-agents.html) of Amazon Q Developer for CLI and so on.
-
-For detailed project structure and architecture, see [CODEBASE.md](CODEBASE.md).
-
-## Installation
-
-### Requirements
-
-- **curl** and **git** — For downloading installers and cloning the repo
-- **Python 3.10 or higher** — CAO requires Python >=3.10 (see [pyproject.toml](pyproject.toml))
-- **tmux 3.3+** — Used for agent session isolation
-- **[uv](https://docs.astral.sh/uv/)** — Fast Python package installer and virtual environment manager
-
-### 1. Install Python 3.10+
-
-If you don't have Python 3.10+ installed, use your platform's package manager:
-
-```bash
-# macOS (Homebrew)
-brew install python@3.12
-
-# Ubuntu/Debian
-sudo apt update && sudo apt install python3.12 python3.12-venv
-
-# Amazon Linux 2023 / Fedora
-sudo dnf install python3.12
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Hub (cao-server :9889)                                         │
+│  ┌──────────┐  ┌────────────────┐  ┌────────────────────────┐  │
+│  │ FastAPI   │  │ Evolution API  │  │ MCP Server             │  │
+│  │ api/      │  │ /evolution/*   │  │ cao-mcp-server         │  │
+│  │ main.py   │  │ evolution_     │  │ server.py              │  │
+│  │           │  │ routes.py      │  │ + evolution_tools.py   │  │
+│  └─────┬─────┘  └───────┬───────┘  └──────────┬─────────────┘  │
+│        │                │                      │                │
+│  ┌─────▼─────────────────▼──────────────────────▼────────────┐  │
+│  │  Services: terminal, session, inbox, flow, cleanup        │  │
+│  │  Evolution: heartbeat, attempts, checkpoint, repo_manager │  │
+│  │  Providers: claude_code, codex, copilot_cli, opencode,    │  │
+│  │             remote, clother_minimax_cn                     │  │
+│  └────────────────────────┬──────────────────────────────────┘  │
+└───────────────────────────┼─────────────────────────────────────┘
+                            │
+              ┌─────────────┼─────────────┐
+              ▼             ▼             ▼
+         Local Agent   Local Agent   Remote Agent
+         (tmux)        (tmux)        (HTTP bridge)
+              │             │             │
+              └──── evo-skills ───────────┘
+                   .cao-evolution/ (git)
 ```
 
-Verify your Python version:
+**Three entry points:**
 
-```bash
-python3 --version   # Should be 3.10 or higher
-```
-
-> **Note:** We recommend using [uv](https://docs.astral.sh/uv/) to manage Python environments instead of system-wide installations like Anaconda. `uv` automatically handles virtual environments and Python version resolution per-project.
-
-### 2. Install tmux (version 3.3 or higher required)
-
-```bash
-bash <(curl -s https://raw.githubusercontent.com/awslabs/cli-agent-orchestrator/refs/heads/main/tmux-install.sh)
-```
-
-### 3. Install uv
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env   # Add uv to PATH (or restart your shell)
-```
-
-### 4. Install CLI Agent Orchestrator
-
-```bash
-uv tool install git+https://github.com/awslabs/cli-agent-orchestrator.git@main --upgrade
-```
-
-### Development Setup
-
-For local development, clone the repo and install with `uv sync`:
-
-```bash
-git clone https://github.com/awslabs/cli-agent-orchestrator.git
-cd cli-agent-orchestrator/
-uv sync          # Creates .venv/ and installs all dependencies
-uv run cao --help  # Verify installation
-```
-
-For development workflow, testing, code quality checks, and project structure, see [DEVELOPMENT.md](DEVELOPMENT.md).
-
-## Prerequisites
-
-Before using CAO, install at least one supported CLI agent tool:
-
-| Provider | Documentation | Authentication |
-|----------|---------------|----------------|
-| **Kiro CLI** (default) | [Provider docs](docs/kiro-cli.md) · [Installation](https://kiro.dev/docs/kiro-cli) | AWS credentials |
-| **Claude Code** | [Provider docs](docs/claude-code.md) · [Installation](https://docs.anthropic.com/en/docs/claude-code/getting-started) | Anthropic API key |
-| **Codex CLI** | [Provider docs](docs/codex-cli.md) · [Installation](https://github.com/openai/codex) | OpenAI API key |
-| **OpenCode** | [Provider docs](docs/opencode.md) · [Installation](https://opencode.ai) | Provider-specific API key |
-| **Gemini CLI** | [Provider docs](docs/gemini-cli.md) · [Installation](https://github.com/google-gemini/gemini-cli) | Google AI API key |
-| **Kimi CLI** | [Provider docs](docs/kimi-cli.md) · [Installation](https://platform.moonshot.cn/docs/kimi-cli) | Moonshot API key |
-| **GitHub Copilot CLI** | [Provider docs](docs/copilot-cli.md) · [Installation](https://github.com/features/copilot/cli) | GitHub auth |
-| **Q CLI** | [Installation](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line.html) | AWS credentials |
-| **Script** | Built-in — run arbitrary shell scripts | N/A |
+| Command | Description |
+|---------|-------------|
+| `cao-server` | FastAPI HTTP server on `:9889` — orchestration API + evolution endpoints |
+| `cao` | CLI (Click) — `launch`, `shutdown`, `info`, `install`, `flow`, `mcp-server` |
+| `cao-mcp-server` | MCP stdio server — agents call orchestration + evolution tools through this |
 
 ## Quick Start
 
-### 1. Install Agent Profiles
+### Requirements
 
-Install the supervisor agent (the orchestrator that delegates to other agents):
+- Python 3.10+
+- tmux 3.2+ (for local agents; not needed for remote-only setups)
+- [uv](https://docs.astral.sh/uv/) (package manager)
+- At least one supported AI coding agent CLI installed
 
-```bash
-cao install code_supervisor
-```
-
-Optionally install additional worker agents:
-
-```bash
-cao install developer
-cao install reviewer
-```
-
-You can also install agents from local files or URLs:
+### Install & Run
 
 ```bash
-cao install ./my-custom-agent.md
-cao install https://example.com/agents/custom-agent.md
+# Clone and install
+git clone <this-repo>
+cd security-agent-orchestrator/
+uv sync
+
+# Install an agent profile
+uv run cao install code_supervisor
+
+# Terminal 1 — start the server
+uv run cao-server
+
+# Terminal 2 — launch a supervisor
+uv run cao launch --agents code_supervisor --provider claude_code
+
+# Shutdown when done
+uv run cao shutdown --all
 ```
 
-For details on creating custom agent profiles, see [docs/agent-profile.md](docs/agent-profile.md).
-
-### 2. Start the Server
+### Working with tmux
 
 ```bash
-cao-server
+tmux list-sessions              # List all sessions
+tmux attach -t <session-name>   # Attach to a session
+# Ctrl+b, d   → detach
+# Ctrl+b, w   → window selector
 ```
 
-### 3. Launch the Supervisor
-
-In another terminal, launch the supervisor agent:
-
-```bash
-cao launch --agents code_supervisor
-
-# Or specify a provider
-cao launch --agents code_supervisor --provider kiro_cli
-cao launch --agents code_supervisor --provider claude_code
-cao launch --agents code_supervisor --provider codex
-cao launch --agents code_supervisor --provider opencode
-cao launch --agents code_supervisor --provider gemini_cli
-cao launch --agents code_supervisor --provider kimi_cli
-cao launch --agents code_supervisor --provider copilot_cli
-# Skip workspace trust confirmation
-cao launch --agents code_supervisor --yolo
-```
-
-The supervisor will coordinate and delegate tasks to worker agents (developer, reviewer, etc.) as needed using the orchestration patterns.
-
-### 4. Shutdown
-
-```bash
-# Shutdown all cao sessions
-cao shutdown --all
-
-# Shutdown specific session
-cao shutdown --session cao-my-session
-```
-
-### Working with tmux Sessions
-
-All agent sessions run in tmux. Useful commands:
-
-```bash
-# List all sessions
-tmux list-sessions
-
-# Attach to a session
-tmux attach -t <session-name>
-
-# Detach from session (inside tmux)
-Ctrl+b, then d
-
-# Switch between windows (inside tmux)
-Ctrl+b, then n          # Next window
-Ctrl+b, then p          # Previous window
-Ctrl+b, then <number>   # Go to window number (0-9)
-Ctrl+b, then w          # List all windows (interactive selector)
-
-# Delete a session
-cao shutdown --session <session-name>
-```
-
-**List all windows (Ctrl+b, w):**
-
-![Tmux Window Selector](./docs/assets/tmux_all_windows.png)
-
-## Web UI
-
-CAO includes a web dashboard for managing agents, terminals, and flows from the browser.
-
-![CAO Web UI](https://github.com/user-attachments/assets/e7db9261-62b1-4422-b9f5-6fe5f65bdea4)
-
-### Additional Requirements
-
-- **Node.js 18+** — Required for the frontend dev server and Codex CLI
-
-```bash
-# macOS (Homebrew)
-brew install node
-
-# Ubuntu/Debian
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
-sudo apt-get install -y nodejs
-
-# Amazon Linux 2023 / Fedora
-sudo dnf install nodejs20
-
-# Verify
-node --version   # Should be 18 or higher
-```
-
-### Starting the Web UI
-
-> **Note:** The Web UI requires a cloned copy of the repository (the `web/` directory is not included in the `uv tool install` package). If you installed CAO via `uv tool install`, clone the repo first:
-> ```bash
-> git clone https://github.com/awslabs/cli-agent-orchestrator.git
-> cd cli-agent-orchestrator/
-> ```
-
-All commands below assume you are in the **project root** directory (`cli-agent-orchestrator/`).
-
-**Option A: Development mode** (hot-reload, two terminals needed)
-
-```bash
-# Terminal 1 — start the backend server
-cao-server
-
-# Terminal 2 — start the frontend dev server
-cd web/
-npm install        # First time only
-npm run dev        # Starts on http://localhost:5173
-```
-
-Open http://localhost:5173 in your browser.
-
-**Option B: Production mode** (single server, no Vite needed)
-
-```bash
-# Build the frontend once
-cd web/
-npm install && npm run build   # Outputs to web/dist/
-
-# Start the backend — it serves the built frontend automatically
-cd ..
-cao-server
-```
-
-Open http://localhost:9889 in your browser.
-
-> **Custom host/port:** `cao-server --host 0.0.0.0 --port 9889` exposes the server to the network — see Security note below.
-
-**Remote machine access** — If you're running CAO on a remote host (e.g. dev desktop), set up an SSH tunnel:
-
-```bash
-# Dev mode (proxy both frontend and backend)
-ssh -L 5173:localhost:5173 -L 9889:localhost:9889 your-remote-host
-
-# Production mode (backend serves UI directly)
-ssh -L 9889:localhost:9889 your-remote-host
-```
-
-Then open the same URLs (localhost:5173 or localhost:9889) in your local browser.
-
-### Features
-
-Manage sessions, spawn agents, create scheduled flows, configure agent directories, and interact with live terminals — all from the browser. Includes live status badges, an inbox for agent-to-agent messaging, output viewer, and provider auto-detection.
-
-For frontend architecture and component details, see [web/README.md](web/README.md). For agent directory configuration, see [docs/settings.md](docs/settings.md).
-
-## MCP Server Tools and Orchestration Modes
-
-CAO provides a local HTTP server that processes orchestration requests. CLI agents can interact with this server through MCP tools to coordinate multi-agent workflows.
-
-### How It Works
-
-Each agent terminal is assigned a unique `CAO_TERMINAL_ID` environment variable. The server uses this ID to:
-
-- Route messages between agents
-- Track terminal status (IDLE, PROCESSING, COMPLETED, ERROR)
-- Manage terminal-to-terminal communication via inbox
-- Coordinate orchestration operations
-
-When an agent calls an MCP tool, the server identifies the caller by their `CAO_TERMINAL_ID` and orchestrates accordingly.
+## Features
 
 ### Orchestration Modes
 
-CAO supports three orchestration patterns:
+CAO provides three patterns for multi-agent coordination via MCP tools:
 
-> **Note:** All orchestration modes support optional `working_directory` parameter when enabled via `CAO_ENABLE_WORKING_DIRECTORY=true`. See [Working Directory Support](#working-directory-support) for details.
-> All modes also support **context folder parameters** (`global_folder`, `output_folder`, `input_folder`, `input_folders`, `metadata_folder`) and **display_name** for structured multi-phase workflows. See [Context Folders](#context-folders) for details.
+- **Handoff** — synchronous: spawn agent → send task → wait → return output
+- **Assign** — asynchronous: spawn agent → send task → return immediately (agent reports back via `send_message`)
+- **Send Message** — direct message to an existing agent's inbox
 
-**1. Handoff** - Transfer control to another agent and wait for completion
+All modes support `working_directory`, context folder parameters, `display_name`, and cross-provider delegation.
 
-- Creates a new terminal with the specified agent profile
-- Sends the task message and waits for the agent to finish
-- Returns the agent's output to the caller
-- Automatically exits the agent after completion
-- Use when you need **synchronous** task execution with results
+### Providers
 
-Example: Sequential code review workflow
+| Provider | Key | Notes |
+|----------|-----|-------|
+| Claude Code | `claude_code` | `--dangerously-skip-permissions` for auto-approve |
+| Codex CLI | `codex` | `--full-auto` mode |
+| GitHub Copilot CLI | `copilot_cli` | GitHub auth |
+| OpenCode | `opencode` | Session persistence (`ses_xxx` resumption) |
+| Remote | `remote` | HTTP bridge — no tmux on Hub side |
+| Clother MiniMax CN | `clother_minimax_cn` | Claude Code subclass with alternate binary |
 
-![Handoff Workflow](./docs/assets/handoff-workflow.png)
+### Evolution System (CORAL-Inspired)
 
-**2. Assign** - Spawn an agent to work independently (async)
+The main differentiator from upstream. Agents submit evaluation scores; the Hub tracks history, detects plateaus, and dispatches heartbeat prompts to drive improvement.
 
-- Creates a new terminal with the specified agent profile
-- Sends the task message with callback instructions
-- Returns immediately with the terminal ID
-- Agent continues working in the background
-- Assigned agent sends results back to supervisor via `send_message` when complete
-- Messages are queued for delivery if the supervisor is busy (common in parallel workflows)
-- Use for **asynchronous** task execution or fire-and-forget operations
+**Score → Compare → Heartbeat → Evolve cycle:**
 
-Example: A supervisor assigns parallel data analysis tasks to multiple analysts while using handoff to sequentially generate a report template, then combines all results.
+1. Agent calls `cao_report_score(task_id, agent_id, score, feedback)`
+2. Hub compares to history → returns `improved` / `baseline` / `regressed` / `crashed`
+3. Hub checks heartbeat triggers:
+   - **Plateau** — N evals without improvement → `evolve_skill` or `pivot`
+   - **Periodic** — every N evals → `reflect` or `consolidate`
+   - **Score-change** — significant delta → `feedback_reflect`
+4. Triggered prompt is delivered to the agent's inbox
 
-See [examples/assign](examples/assign) for the complete working example.
+**Two-layer prompt architecture:**
+- **Hub-side templates** (`evolution/prompts/*.md`) — `evolve_skill`, `reflect`, `consolidate`, `pivot`, `feedback_reflect`
+- **Agent-side evo-skills** (`evo-skills/*/SKILL.md`) — platform-agnostic skill files agents execute locally
 
-![Parallel Data Analysis](./docs/assets/parallel-data-analysis.png)
-
-**3. Send Message** - Communicate with an existing agent
-
-- Sends a message to a specific terminal's inbox
-- Messages are queued and delivered when the terminal is idle
-- Enables ongoing collaboration between agents
-- Common for **swarm** operations where multiple agents coordinate dynamically
-- Use for iterative feedback or multi-turn conversations
-
-Example: Multi-role feature development
-
-![Multi-role Feature Development](./docs/assets/multi-role-feature-development.png)
-
-### Custom Orchestration
-
-The `cao-server` runs on `http://localhost:9889` by default and exposes REST APIs for session management, terminal control, and messaging. The CLI commands (`cao launch`, `cao shutdown`) and MCP server tools (`handoff`, `assign`, `send_message`) are just examples of how these APIs can be packaged together.
-
-You can combine the three orchestration modes above into custom workflows, or create entirely new orchestration patterns using the underlying APIs to fit your specific needs.
-
-For complete API documentation, see [docs/api.md](docs/api.md).
-
-## Timeout Settings
-
-CAO has multiple timeout layers. For long-running workflows, you may need to tune more than one of them.
-
-### Commonly adjusted settings
-
-| Layer | Where to set it | Default / common value | What it controls |
-|------|------------------|------------------------|------------------|
-| MCP tool-call timeout (OpenCode) | `opencode.json` → `experimental.mcp_timeout` | Often set to `86400000` ms | Maximum duration of a single MCP tool call from the provider side |
-| Agent profile MCP server timeout | Agent frontmatter → `mcpServers.<name>.timeout` | Commonly `86400000` ms | How long the provider allows calls to that MCP server |
-| Handoff completion timeout | `handoff(timeout=...)` | CAO default is `1800` s if omitted | How long the supervisor/runner waits for the delegated task to reach `COMPLETED` |
-
-### CAO built-in defaults that matter
-
-- `cli_agent_orchestrator/mcp_server/server.py`
-  - `handoff(..., timeout=1800)` default completion wait
-  - terminal ready wait before sending the task: `120` seconds
-- `cli_agent_orchestrator/utils/terminal.py`
-  - `wait_until_terminal_status(..., timeout=30.0, polling_interval=1.0)`
-  - terminal status HTTP poll request timeout: `10.0` seconds
-- `cli_agent_orchestrator/providers/opencode.py`
-  - provider init wait is `60.0` seconds
-- `cli_agent_orchestrator/providers/kimi_cli.py`
-  - enforces MCP `tool_call_timeout_ms >= 600000` in `~/.kimi/config.toml`
-
-### About `flow_service`
-
-`flow_service.py` is the backend service used by CAO's scheduled **Flows** feature. It loads flow definitions, optionally runs a pre-launch script, renders the prompt, and launches the target agent session.
-
-Important timeout note:
-
-- `cli_agent_orchestrator/services/flow_service.py` currently runs the optional flow script with `subprocess.run(..., timeout=30)`.
-- This `30`-second timeout applies only to the flow's preparatory script, not to normal `handoff()` execution inside your supervisor/runner workflows.
-- If you are not using scheduled Flows, this timeout does not affect your current `cao-oh-heng-proj` phase execution path.
-
-### Practical guidance
-
-- For long-running worker phases, explicitly pass `timeout=` in every important `handoff()` call instead of relying on the CAO default `1800` seconds.
-- If you use OpenCode, ensure both `opencode.json.experimental.mcp_timeout` and the agent profile's `mcpServers.*.timeout` are large enough.
-- If a worker can finish after the caller times out, treat output markers such as `done.json` as the source of truth before marking the task failed.
-
-## Flows - Scheduled Agent Sessions
-
-Flows allow you to schedule agent sessions to run automatically based on cron expressions.
-
-### Prerequisites
-
-Install the agent profile you want to use:
-
-```bash
-cao install developer
-```
-
-### Quick Start
-
-The example flow asks a simple world trivia question every morning at 7:30 AM.
-
-```bash
-# 1. Start the cao server
-cao-server
-
-# 2. In another terminal, add a flow
-cao flow add examples/flow/morning-trivia.md
-
-# 3. List flows to see schedule and status
-cao flow list
-
-# 4. Manually run a flow (optional - for testing)
-cao flow run morning-trivia
-
-# 5. View flow execution (after it runs)
-tmux list-sessions
-tmux attach -t <session-name>
-
-# 6. Cleanup session when done
-cao shutdown --session <session-name>
-```
-
-**IMPORTANT:** The `cao-server` must be running for flows to execute on schedule.
-
-### Example 1: Simple Scheduled Task
-
-A flow that runs at regular intervals with a static prompt (no script needed):
-
-**File: `daily-standup.md`**
-
-```yaml
----
-name: daily-standup
-schedule: "0 9 * * 1-5"  # 9am weekdays
-agent_profile: developer
-provider: kiro_cli  # Optional, defaults to kiro_cli
----
-
-Review yesterday's commits and create a standup summary.
-```
-
-### Example 2: Conditional Execution with Health Check
-
-A flow that monitors a service and only executes when there's an issue:
-
-**File: `monitor-service.md`**
-
-```yaml
----
-name: monitor-service
-schedule: "*/5 * * * *"  # Every 5 minutes
-agent_profile: developer
-script: ./health-check.sh
----
-
-The service at [[url]] is down (status: [[status_code]]).
-Please investigate and triage the issue:
-1. Check recent deployments
-2. Review error logs
-3. Identify root cause
-4. Suggest remediation steps
-```
-
-**Script: `health-check.sh`**
-
-```bash
-#!/bin/bash
-URL="https://api.example.com/health"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-
-if [ "$STATUS" != "200" ]; then
-  # Service is down - execute flow
-  echo "{\"execute\": true, \"output\": {\"url\": \"$URL\", \"status_code\": \"$STATUS\"}}"
-else
-  # Service is healthy - skip execution
-  echo "{\"execute\": false, \"output\": {}}"
-fi
-```
-
-### Flow Commands
-
-```bash
-# Add a flow
-cao flow add daily-standup.md
-
-# List all flows (shows schedule, next run time, enabled status)
-cao flow list
-
-# Enable/disable a flow
-cao flow enable daily-standup
-cao flow disable daily-standup
-
-# Manually run a flow (ignores schedule)
-cao flow run daily-standup
-
-# Remove a flow
-cao flow remove daily-standup
-```
-
-## Working Directory Support
-
-CAO supports specifying working directories for agent handoff/delegation operations. By default this is disabled to prevent agents from hallucinating directory paths.
-
-All paths are canonicalized via `realpath` and validated against a security policy:
-
-- **Allowed:** any real directory that is not a blocked system path — including `~/`, external volumes (e.g., `/Volumes/workplace`), and custom paths like `/opt/projects`
-- **Blocked:** system directories (`/`, `/etc`, `/var`, `/tmp`, `/proc`, `/sys`, `/root`, `/boot`, `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`, `/lib`, `/lib64`, `/dev`)
-
-For configuration and usage details, see [docs/working-directory.md](docs/working-directory.md).
-
-## Context Folders
-
-`handoff` and `assign` tools accept optional **context folder parameters** that allow supervisors and runners to pass structured directory context to worker agents:
-
-| Parameter | Description |
-|-----------|-------------|
-| `global_folder` | Shared directory accessible by all agents in the session |
-| `output_folder` | Directory where the worker should write results |
-| `input_folder` | Primary input directory for the worker to read from |
-| `input_folders` | Named input directories as `{name: path}` dict (e.g., `{"phase1": "/path/to/phase1/out"}`) |
-| `metadata_folder` | Directory for task-level metadata files |
-| `display_name` | Human-readable label for the tmux terminal window |
-
-When any context folder parameters are provided, CAO serializes them as a `[CAO Context]` JSON header prepended to the message body:
-
-```
-[CAO Context]
-{
-  "global_folder": "/tmp/sessions/run-001/global",
-  "output_folder": "/tmp/sessions/run-001/0/phase1/out",
-  "metadata_folder": "/tmp/sessions/run-001/0/meta"
-}
-[/CAO Context]
-
-Your actual task message here...
-```
-
-### cao-mcp-task-context
-
-For multi-phase workflow scenarios, the companion **`cao-mcp-task-context`** MCP server manages the session directory structure:
-
-```
-sessions/
-└── my-session/
-    ├── global/           # Shared across all tasks
-    ├── TASK.md           # Top-level task prompt
-    ├── RUNNER.md         # Runner prompt template
-    ├── workflow.json     # Phase definitions + dependencies
-    └── 0/               # Task index 0
-        ├── meta/        # Task metadata JSONs
-        └── phase1/      # Phase working directory
-            ├── AGENT.md # Worker system prompt
-            ├── TASK.md  # Worker task prompt
-            └── out/     # Phase output directory
-```
-
-Tools provided by `cao-mcp-task-context`:
+**Evolution MCP tools** (registered on `cao-mcp-server`):
 
 | Tool | Description |
 |------|-------------|
-| `init_session` | Create session root with workflow.json, global/, templates |
-| `get_workflow` | Read the current session's workflow definition |
-| `prepare_task` | Create `{task_index}/meta/` directory tree |
-| `prepare_phase_context` | Create phase working dir + out/, return context paths for handoff |
-| `write_task_meta` | Write JSON metadata under `{task_index}/meta/` |
-| `list_tasks` | List all task directories in the session |
-| `cleanup_task` | Remove a task directory |
-| `cleanup_phase` | Remove a specific phase directory |
-| `archive_provider_session` | Zip provider session data for archival |
+| `cao_report_score` | Submit evaluation score to Hub |
+| `cao_get_leaderboard` | Top attempts sorted by score |
+| `cao_search_knowledge` | Search notes + skills by text and tags |
+| `cao_share_note` | Publish a knowledge note (markdown + YAML frontmatter) |
+| `cao_share_skill` | Publish a reusable skill file |
+| `cao_get_shared_notes` | List shared notes, optionally filtered by tags |
+| `cao_get_shared_skills` | List all shared skills |
+| `cao_submit_report` | Submit a structured findings report with human-label support |
 
-Install and configure via agent profile frontmatter:
+**Git-based sync:** All evolution data (scores, prompts, knowledge) is stored in a `.cao-evolution/` repository with flat directory layout. Every score submission triggers a checkpoint commit.
+
+### Evo-Skills
+
+Five platform-agnostic evolution skills in `evo-skills/`:
+
+| Skill | Purpose |
+|-------|---------|
+| `secskill-evo` | Create, test, and evolve Claude Code skills — benchmark, mutate, crossover |
+| `openspace-evo` | Evolve skills via OpenSpace strategies (DERIVED, CAPTURED, COMPOSED) |
+| `cao-reflect` | Produce a structured Note with insights from recent execution |
+| `cao-consolidate` | Synthesize all agents' notes into actionable insights |
+| `cao-pivot` | Abandon incremental tweaks — try a fundamentally different strategy |
+
+Agents load these via `evo-skills/<name>/SKILL.md` or pull them from the Hub with `cao_pull_skills`.
+
+### Remote Agents
+
+Remote agents connect via HTTP bridge — no tmux required on the Hub side.
+
+```
+Hub (cao-server)                Remote Machine
+┌──────────────┐   HTTP/REST   ┌──────────────────┐
+│ RemoteProvider│◄────────────►│ Bridge            │
+│ (in-memory)  │               │ (MCP/Plugin/Skill)│
+└──────────────┘               │   ↕               │
+                               │ Agent (any CLI)   │
+                               └──────────────────┘
+```
+
+**Hub routes:** `/remotes/register`, `/remotes/{id}/poll`, `/remotes/{id}/report`, `/remotes/{id}/status`
+
+**Three bridge variants** (in `cao-bridge/`):
+1. **MCP bridge** (`cao_bridge_mcp.py`) — FastMCP stdio server with `cao_register`, `cao_poll`, `cao_report`
+2. **Skill bridge** (`skill/SKILL.md`) — instruction file using `curl` for the bridge protocol
+3. **Plugin bridge** (`plugin/cao-bridge.ts`) — TypeScript plugin for OpenCode
+
+Additional integrations: Claude Code hooks (`cao-bridge/claude-code/`), Hermes plugin (`cao-bridge/hermes-plugin/`), git-based sync (`cao-bridge/git_sync.py`).
+
+### Knowledge System
+
+- **Notes** — markdown with YAML frontmatter (title, tags, agent_id, origin_task, confidence)
+- **Skills** — reusable SKILL.md files shared across agents
+- **Search** — grep + tag filtering via `cao_search_knowledge`
+- **Storage** — `.cao-evolution/` git repo, checkpoint on every write
+
+### Flows (Scheduled Sessions)
+
+Cron-scheduled agent sessions via `cao flow add <flow.md>`:
 
 ```yaml
-mcpServers:
-  cao-task-context:
-    type: stdio
-    command: cao-task-context
-    env:
-      CAO_SESSION_ROOT: "/tmp/my-sessions"
+---
+name: daily-review
+schedule: "0 9 * * 1-5"
+agent_profile: developer
+provider: claude_code
+---
+Review yesterday's commits and create a summary.
 ```
 
-## Remote Agents
+Commands: `cao flow add|list|run|enable|disable|remove`
 
-CAO can orchestrate **remote** AI agents running on separate machines. Remote terminals use an in-memory queue instead of tmux — the remote agent polls for tasks and reports results via HTTP.
+### Web UI
 
-### Architecture
-
-```
-Hub (CAO Server)                 Remote Machine
-┌──────────────┐    HTTP/REST    ┌──────────────────────┐
-│ RemoteProvider│ ◄────────────► │ Bridge (MCP/Plugin)  │
-│ (in-memory)  │                 │   ↕                  │
-│ API Routes   │                 │ Agent (opencode, etc)│
-└──────────────┘                 └──────────────────────┘
-```
-
-### Hub API Routes
-
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/remotes/register` | POST | Register a remote agent, creates a virtual terminal |
-| `/remotes/{id}/poll` | GET | Agent polls for pending input (task/message) |
-| `/remotes/{id}/report` | POST | Agent reports status and/or output |
-| `/remotes/{id}/status` | GET | Query current remote agent status |
-
-### Bridge Variants (in `cao-bridge/`)
-
-1. **MCP Server** (`cao_bridge_mcp.py`) — FastMCP stdio server exposing `cao_register`, `cao_poll`, `cao_report` tools. Add to any MCP-capable agent's config.
-2. **Skill** (`skill/cao-bridge/SKILL.md`) — Instruction file the agent loads to follow the bridge protocol using `curl`.
-3. **OpenCode Plugin** (`plugin/cao-bridge.ts`) — TypeScript plugin with auto-register hook and tools for poll/report.
-
-### Quick Start
+React + Vite + Tailwind dashboard in `web/`. Manages sessions, terminals, flows, and live agent output. Start with:
 
 ```bash
-# On the Hub
-cao launch --provider remote   # not needed; remotes self-register
-
-# On the remote machine (MCP bridge)
-export CAO_HUB_URL=http://<hub-ip>:9889
-export CAO_AGENT_PROFILE=opencode
-python3 cao-bridge/cao_bridge_mcp.py
-
-# Or register manually via curl
-curl -X POST http://<hub-ip>:9889/remotes/register \
-  -H "Content-Type: application/json" \
-  -d '{"agent_profile": "opencode"}'
+cd web/ && npm install && npm run dev   # Dev mode on :5173
+# Or build for production: npm run build, then cao-server serves it on :9889
 ```
 
-Existing MCP tools (`handoff`, `assign`, `send_message`) work transparently with remote terminals — `terminal_service` routes to RemoteProvider automatically.
+## Project Structure
 
-## Remote MCP Servers (SSE)
+```
+src/cli_agent_orchestrator/
+├── api/              main.py, evolution_routes.py
+├── mcp_server/       server.py, evolution_tools.py
+├── evolution/        heartbeat, attempts, checkpoint, repo_manager,
+│   │                 skill_sync, grader_base, reports, types
+│   └── prompts/      evolve_skill.md, reflect.md, consolidate.md, pivot.md
+├── providers/        base, manager, claude_code, codex, copilot_cli,
+│                     opencode, remote, clother_minimax_cn
+├── services/         terminal, session, inbox, flow, cleanup, settings
+├── clients/          tmux.py, database.py
+├── models/           terminal, session, inbox, flow, provider, agent_profile
+└── cli/              main.py + commands/
 
-Agent profiles support both **local** (stdio) and **remote** (SSE/HTTP) MCP server configurations. Remote servers are useful when multiple agents need to share a single server instance (e.g., for atomic task distribution).
+evo-skills/           5 platform-agnostic evolution skills
+cao-bridge/           Remote agent bridge implementations
+cao-mcp-task-context/ Companion MCP server for directory context management
+web/                  React + Vite + Tailwind frontend
+examples/             Agent profiles and workflow examples
+test/                 ~90 test files (13 evolution-specific)
+docs/                 API, provider, and configuration docs
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CAO_ENABLE_WORKING_DIRECTORY` | `false` | Allow `working_directory` in handoff/assign |
+| `CAO_REQUIRE_CONTEXT_FOLDERS` | `false` | Make context folder params required |
+| `CAO_HUB_URL` | `http://localhost:9889` | Hub URL for remote bridges |
+| `CAO_AGENT_PROFILE` | — | Agent profile name for remote registration |
+
+### Agent Profile Provider Override
 
 ```yaml
-mcpServers:
-  # Local stdio server (default)
-  cao-mcp-server:
-    command: cao-mcp-server
-    env:
-      CAO_ENABLE_WORKING_DIRECTORY: "true"
-  # Remote SSE server (shared across agents)
-  taskgen:
-    type: remote
-    url: "http://127.0.0.1:9877/sse"
-```
-
-Provider translation:
-
-| Provider | Local (`type: stdio`) | Remote (`type: remote`) |
-|----------|----------------------|------------------------|
-| **Claude Code / Clother** | `--mcp-config` JSON passthrough | Translated to `type: "sse"` with `url` |
-| **OpenCode** | `type: "local"` with `command` array | `type: "remote"` with `url`, `oauth: false` |
-| **Codex** | `-c mcp_servers.NAME.*` CLI flags | ❌ Not supported |
-
-## System Prompt Injection
-
-CAO injects agent profile `system_prompt` content by **prepending it as the first user message** via tmux, wrapped in `[System Prompt]...[/System Prompt]` tags. This approach avoids shell-escaping issues with long prompts containing special characters.
-
-- **`cao launch`**: System prompt is sent as the first message after the provider initializes
-- **`handoff` / `assign`**: System prompt is prepended to the task message (the provider starts with `send_system_prompt=false` to prevent double injection)
-
-The `[CAO Handoff]` and `[CAO Assign]` banners are always appended to provide orchestration context:
-
-```
-[CAO Handoff] Supervisor terminal ID: abc123. This is a blocking handoff...
-[CAO Assign] supervisor_terminal_id=abc123. When all work is complete, call: send_message(...)
-```
-
-## Cross-Provider Orchestration
-
-By default, worker agents inherit the provider of the terminal that spawned them. To run specific agents on different providers, add a `provider` key to the agent profile frontmatter:
-
-```markdown
 ---
 name: developer
 description: Developer Agent
@@ -723,84 +249,42 @@ provider: claude_code
 ---
 ```
 
-Valid values: `kiro_cli`, `claude_code`, `codex`, `opencode`, `clother_minimax_cn`, `q_cli`, `gemini_cli`, `kimi_cli`, `copilot_cli`, `script`.
+Valid `provider` values: `claude_code`, `codex`, `copilot_cli`, `opencode`, `remote`, `clother_minimax_cn`.
 
-When a supervisor calls `assign` or `handoff`, CAO reads the worker's agent profile and uses the declared provider if present. If the key is missing or invalid, the worker falls back to the supervisor's provider.
+### MCP Server Configuration
 
-The `cao launch --provider` flag always takes precedence — it is treated as an explicit override and the profile's `provider` key is not consulted for the initial session.
-
-For ready-to-use examples, see [`examples/cross-provider/`](examples/cross-provider/).
-
-## Provider Features
-
-### Environment Variables
-
-All providers support setting custom environment variables before launching the CLI agent. Environment variables are applied via `export KEY=VALUE` in the tmux session before the provider command runs. Variable names are validated against `^[A-Za-z_][A-Za-z0-9_]*$` to prevent shell injection.
-
-### Auto-Approve / Yolo Mode
-
-Each provider enables auto-approve mode by default to skip interactive permission prompts:
-
-| Provider | Mechanism |
-|----------|-----------|
-| **Claude Code** | `--dangerously-skip-permissions` flag |
-| **Clother MiniMax CN** | Same as Claude Code (uses `clother-minimax-cn` binary) |
-| **Codex CLI** | `--full-auto --dangerously-bypass-approvals-and-sandbox` flags |
-| **OpenCode** | `OPENCODE_CONFIG_CONTENT='{"permission":"allow"}'` env var |
-| **Others** | Provider defaults |
-
-### Session ID Extraction (OpenCode)
-
-The OpenCode provider supports graceful exit with session ID extraction. When exiting via Ctrl-C, OpenCode prints a session restore hint:
-
-```
-Session   Greeting
-Continue  opencode -s ses_2c57b2436ffepiOds7uuqq2hHd
+```yaml
+mcpServers:
+  cao-mcp-server:
+    command: cao-mcp-server
+    env:
+      CAO_ENABLE_WORKING_DIRECTORY: "true"
+  # Remote SSE server (optional)
+  taskgen:
+    type: remote
+    url: "http://127.0.0.1:9877/sse"
 ```
 
-The `graceful_exit()` method sends Ctrl-C, waits for the shell prompt, and parses the `ses_xxx` identifier for session resumption.
+## Documentation
 
-### Script Provider
-
-The Script provider allows running arbitrary shell scripts as "agents" within the CAO framework. This is useful for tasks that don't require an AI coding agent, such as running build pipelines, deployment scripts, or data processing workflows.
-
-```python
-from cli_agent_orchestrator.providers.manager import provider_manager
-
-# Create a script provider directly
-provider = provider_manager.create_script_provider(
-    terminal_id="my-script-1",
-    session_name="cao-scripts",
-    window_name="build",
-    script_path="/path/to/my-script.sh",
-    script_args=["--verbose", "--output", "/tmp/results"],
-    env_vars={"MY_VAR": "value"},
-)
-provider.initialize()
-```
-
-Key features:
-- **Status detection**: Monitors shell prompt (`$` / `#`) visibility to determine PROCESSING vs COMPLETED
-- **Output extraction**: Captures script stdout/stderr from the terminal
-- **Environment variables**: Supports custom env vars passed to the script
-- **Same lifecycle**: Follows the same `initialize()` → `get_status()` → `extract_last_message_from_script()` → `cleanup()` pattern as CLI agent providers
+| Document | Description |
+|----------|-------------|
+| [CODEBASE.md](CODEBASE.md) | Detailed architecture and code map |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Dev setup, testing, code quality |
+| [docs/api.md](docs/api.md) | REST API reference |
+| [docs/agent-profile.md](docs/agent-profile.md) | Creating custom agent profiles |
+| [docs/settings.md](docs/settings.md) | Agent directory and settings config |
+| [docs/working-directory.md](docs/working-directory.md) | Working directory security policy |
+| [docs/claude-code.md](docs/claude-code.md) | Claude Code provider details |
+| [docs/codex-cli.md](docs/codex-cli.md) | Codex CLI provider details |
+| [docs/copilot-cli.md](docs/copilot-cli.md) | GitHub Copilot CLI provider details |
+| [cao-bridge/README.md](cao-bridge/README.md) | Remote bridge setup guide |
+| [web/README.md](web/README.md) | Web UI architecture |
 
 ## Security
 
-The server is designed for **localhost-only use**. The WebSocket terminal endpoint (`/terminals/{id}/ws`) provides full PTY access and will reject connections from non-loopback addresses. Do not expose the server to untrusted networks without adding authentication.
-
-### DNS Rebinding Protection
-
-The CAO server validates HTTP `Host` headers to prevent [DNS rebinding attacks](https://owasp.org/www-community/attacks/DNS_Rebinding). Only `localhost` and `127.0.0.1` are accepted by default — requests with other hostnames are rejected with `400 Bad Request`.
-
-**Note:** If you need to expose the server on a network (not recommended for development use), be aware that the Host header validation will reject requests unless the hostname matches the allowed list.
-
-See [SECURITY.md](SECURITY.md) for vulnerability reporting, security scanning, and best practices.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.
+The server is designed for **localhost-only use**. Host header validation prevents DNS rebinding. Do not expose to untrusted networks without authentication.
 
 ## License
 
-This project is licensed under the Apache-2.0 License.
+This project is licensed under the Apache-2.0 License — inherited from [awslabs/cli-agent-orchestrator](https://github.com/awslabs/cli-agent-orchestrator).

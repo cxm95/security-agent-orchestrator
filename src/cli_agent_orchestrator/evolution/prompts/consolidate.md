@@ -1,23 +1,21 @@
 ## Heartbeat: Knowledge Synthesis
 
-Pause and synthesize shared knowledge. Call `cao_search_knowledge` and `cao_get_shared_notes` to review what the team knows.
+Pause and synthesize shared knowledge across agents.
 
-### Evolution Signals
+### Context
 ```json
 {evolution_signals_json}
 ```
 
-### Process
+### Action
 
-1. **Read**: Search notes with `cao_search_knowledge(query="", tags="{task_id}")` to find all notes for this task.
+Load and execute the **cao-consolidate** skill from your evolution skills directory.
+The skill is at: `evo-skills/cao-consolidate/SKILL.md`
+(or pulled into your local skills dir via `cao_pull_skills`)
 
-2. **Synthesize**: Identify patterns across multiple notes. Create a synthesis note that distills key findings.
+Pass this context to the skill:
+- Task ID: {task_id}
+- The evolution signals above (include cross-agent data)
+- Leaderboard for context on other agents' progress
 
-3. **Identify gaps**: What questions remain unanswered? What contradictions exist?
-
-### Output
-
-Call `cao_share_note` with:
-- `title="Synthesis: <topic>"`
-- `tags="synthesis,{task_id}"`
-- Content that distills multiple notes into actionable insights.
+After the skill completes (a synthesis Note is written), apply any insights to your work and resume.

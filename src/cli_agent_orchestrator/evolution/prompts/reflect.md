@@ -1,24 +1,21 @@
 ## Heartbeat: Reflection
 
-Pause your current work and reflect on recent results. Share insights via `cao_share_note`.
+Pause your current work and reflect on recent results.
 
-### Evolution Signals
+### Context
 ```json
 {evolution_signals_json}
 ```
 
-### Anchor in concrete results
-Review your recent attempts. What specific actions led to score improvements or regressions?
+### Action
 
-### Examine surprises
-What didn't go as expected? Surprises reveal gaps in your mental model.
+Load and execute the **cao-reflect** skill from your evolution skills directory.
+The skill is at: `evo-skills/cao-reflect/SKILL.md`
+(or pulled into your local skills dir via `cao_pull_skills`)
 
-### Analyze causes
-For your most significant result (good or bad): *why* did it happen?
+Pass this context to the skill:
+- Task ID: {task_id}
+- Your recent evolution signals (above)
+- Leaderboard position and score trend
 
-### Plan next step
-Based on this reflection and the signals above, what's one specific thing to try next?
-
----
-
-**Action**: Call `cao_share_note(title="Reflection: ...", content="...", tags="reflection,{task_id}")` with your insights.
+After the skill completes (a reflection Note is written), resume your main task.

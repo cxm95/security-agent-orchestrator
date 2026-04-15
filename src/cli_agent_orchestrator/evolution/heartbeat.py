@@ -135,14 +135,16 @@ def build_runner(evo_dir: str, agent_id: str) -> HeartbeatRunner:
 
 def render_prompt(action: HeartbeatAction, agent_id: str, task_id: str,
                   leaderboard: str = "",
-                  evolution_signals: dict | None = None) -> str:
+                  evolution_signals: dict | None = None,
+                  evals_since_improvement: int = 0) -> str:
     """Fill template variables in a heartbeat prompt."""
     signals_json = json.dumps(evolution_signals, indent=2) if evolution_signals else "{}"
     return (action.prompt
             .replace("{agent_id}", agent_id)
             .replace("{task_id}", task_id)
             .replace("{leaderboard}", leaderboard)
-            .replace("{evolution_signals_json}", signals_json))
+            .replace("{evolution_signals_json}", signals_json)
+            .replace("{evals_since_improvement}", str(evals_since_improvement)))
 
 
 # ── Integration: check_triggers ───────────────────────────────────────
@@ -172,7 +174,7 @@ def check_triggers(
     )
     results = []
     for action in triggered:
-        prompt = render_prompt(action, agent_id, task_id, leaderboard, evolution_signals)
+        prompt = render_prompt(action, agent_id, task_id, leaderboard, evolution_signals, evals_since_improvement)
         results.append({"name": action.name, "prompt": prompt})
         logger.info(f"Heartbeat triggered: {action.name} for agent={agent_id} task={task_id}")
 

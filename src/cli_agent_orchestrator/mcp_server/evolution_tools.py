@@ -1,8 +1,9 @@
 """Evolution MCP tools — appended to the CAO MCP server.
 
 Provides: cao_report_score, cao_get_leaderboard, cao_search_knowledge,
-cao_share_note, cao_share_skill, cao_get_shared_notes, cao_get_shared_skills,
-cao_create_task, cao_list_tasks, cao_submit_report, cao_fetch_feedback, cao_list_reports.
+cao_get_shared_notes, cao_get_shared_skills,
+cao_create_task, cao_list_tasks, cao_submit_report, cao_fetch_feedback, cao_list_reports,
+cao_recall, cao_fetch_document.
 
 All tools call the Hub HTTP API (same pattern as existing MCP tools).
 """
@@ -89,56 +90,6 @@ def register_evolution_tools(mcp: FastMCP) -> None:
             return r.json()
         except Exception as e:
             return [{"error": str(e)}]
-
-    @mcp.tool()
-    def cao_share_note(
-        title: str = Field(description="Note title"),
-        content: str = Field(description="Note body (markdown)"),
-        tags: str = Field(default="", description="Comma-separated tags"),
-        agent_id: str = Field(default="", description="Agent terminal ID"),
-        origin_task: str = Field(default="", description="Task that produced this note"),
-        origin_score: Optional[float] = Field(default=None, description="Score when note was created"),
-        confidence: str = Field(default="medium", description="high/medium/low"),
-    ) -> Dict[str, Any]:
-        """Share a knowledge note to the Hub for other agents to find."""
-        try:
-            r = _http.post(
-                f"{API_BASE_URL}/evolution/knowledge/notes",
-                json={
-                    "title": title, "content": content,
-                    "tags": [t.strip() for t in tags.split(",") if t.strip()],
-                    "agent_id": agent_id, "origin_task": origin_task,
-                    "origin_score": origin_score, "confidence": confidence,
-                },
-                timeout=10,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            return {"error": str(e)}
-
-    @mcp.tool()
-    def cao_share_skill(
-        name: str = Field(description="Skill name (alphanumeric, hyphens, underscores)"),
-        content: str = Field(description="Skill content (SKILL.md body)"),
-        tags: str = Field(default="", description="Comma-separated tags"),
-        agent_id: str = Field(default="", description="Agent terminal ID"),
-    ) -> Dict[str, Any]:
-        """Share a reusable skill to the Hub."""
-        try:
-            r = _http.post(
-                f"{API_BASE_URL}/evolution/knowledge/skills",
-                json={
-                    "name": name, "content": content,
-                    "tags": [t.strip() for t in tags.split(",") if t.strip()],
-                    "agent_id": agent_id,
-                },
-                timeout=10,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            return {"error": str(e)}
 
     @mcp.tool()
     def cao_get_shared_notes(
@@ -256,12 +207,13 @@ def register_evolution_tools(mcp: FastMCP) -> None:
         task_id: str = Field(description="Task identifier (alphanumeric, hyphens, underscores)"),
         name: str = Field(default="", description="Human-readable task name"),
         description: str = Field(default="", description="Task description"),
-        grader: str = Field(default="", description="Path ref to graders/, e.g. 'security/sql-grader.py'"),
+        grader_skill: str = Field(default="", description="Name of evo-skill used for grading, e.g. 'security-grader'"),
         tips: str = Field(default="", description="Comma-separated tips for agents"),
         force: bool = Field(default=False, description="Overwrite existing task (agent-side wins)"),
     ) -> Dict[str, Any]:
         """Create or update a task on the Hub. Remote agents can register tasks.
 
+        grader_skill names an evo-skill that the agent loads to grade its own output.
         Use force=true to update an existing task (agent-side takes precedence).
         """
         try:
@@ -270,7 +222,7 @@ def register_evolution_tools(mcp: FastMCP) -> None:
                 f"{API_BASE_URL}/evolution/tasks",
                 json={
                     "task_id": task_id, "name": name or task_id,
-                    "description": description, "grader": grader,
+                    "description": description, "grader_skill": grader_skill,
                     "tips": tips_list, "created_by": "mcp-agent",
                     "force": force,
                 },
@@ -290,3 +242,52 @@ def register_evolution_tools(mcp: FastMCP) -> None:
             return r.json()
         except Exception as e:
             return [{"error": str(e)}]
+
+    # ── Recall (BM25-ranked search) ──────────────────────────────────────
+
+    @mcp.tool()
+    def cao_recall(
+        query: str = Field(description="Search query text"),
+        tags: str = Field(default="", description="Comma-separated tags to filter"),
+        top_k: int = Field(default=10, description="Max results"),
+        include_content: bool = Field(
+            default=False,
+            description="Include full document content in results",
+        ),
+    ) -> List[Dict[str, Any]]:
+        """BM25-ranked knowledge recall — more precise than cao_search_knowledge.
+
+        Results sorted by relevance score.
+        Set include_content=True to get full document body inline.
+        """
+        try:
+            r = _http.get(
+                f"{API_BASE_URL}/evolution/knowledge/recall",
+                params={
+                    "query": query, "tags": tags,
+                    "top_k": top_k, "include_content": include_content,
+                },
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return [{"error": str(e)}]
+
+    @mcp.tool()
+    def cao_fetch_document(
+        doc_id: str = Field(description="Document ID (e.g. 'note:finding-1' or 'skill:scanner')"),
+    ) -> Dict[str, Any]:
+        """Fetch a specific knowledge document by ID (selective sync).
+
+        Use doc_id from cao_recall results to fetch full content.
+        """
+        try:
+            r = _http.get(
+                f"{API_BASE_URL}/evolution/knowledge/document/{doc_id}",
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}

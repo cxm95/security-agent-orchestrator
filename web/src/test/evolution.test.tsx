@@ -158,7 +158,9 @@ describe('EvolutionPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('Score Dimensions')).toBeInTheDocument()
     })
-    expect(screen.getByText('accuracy')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('accuracy')).toBeInTheDocument()
+    })
     expect(screen.getByText('coverage')).toBeInTheDocument()
   })
 

@@ -45,7 +45,7 @@ export interface TerminalMeta {
 export interface AgentProfileInfo {
   name: string
   description: string
-  source: 'built-in' | 'local' | 'kiro' | 'q_cli'
+  source: 'built-in' | 'local' | 'claude_code' | 'codex' | 'installed' | 'custom'
 }
 
 export interface AgentDirsSettings {
@@ -112,6 +112,17 @@ export interface EvolutionKnowledgeResult {
   name: string
   snippet: string
   tags: string
+}
+
+export interface RecallResult {
+  doc_id: string
+  type: string
+  title: string
+  tags: string[]
+  score: number
+  snippet: string
+  meta: Record<string, string>
+  content?: string
 }
 
 export interface ReportFinding {
@@ -228,6 +239,10 @@ export const api = {
   listSkills: () => fetchJSON<EvolutionSkill[]>('/evolution/knowledge/skills'),
   searchKnowledge: (query: string, tags = '', topK = 10) =>
     fetchJSON<EvolutionKnowledgeResult[]>(`/evolution/knowledge/search?query=${encodeURIComponent(query)}&tags=${encodeURIComponent(tags)}&top_k=${topK}`),
+  recallKnowledge: (query: string, tags = '', topK = 10, includeContent = false) =>
+    fetchJSON<RecallResult[]>(`/evolution/knowledge/recall?query=${encodeURIComponent(query)}&tags=${encodeURIComponent(tags)}&top_k=${topK}&include_content=${includeContent}`),
+  getDocument: (docId: string) =>
+    fetchJSON<RecallResult>(`/evolution/knowledge/document/${encodeURIComponent(docId)}`),
 
   // Reports / Human Feedback
   listReports: (taskId: string, terminalId = '', status = '') =>

@@ -3,10 +3,15 @@
 Push: scan local agent skill dirs → copy new/updated skills to shared pool.
 Pull: copy shared pool skills back to preferred local dir (with backup on conflict).
 
+Supports two pool sources:
+  1. Hub-side pool (same machine): ~/.cao-evolution/skills/
+  2. Agent-side clone (remote): ~/.cao-evolution-client/skills/
+
 Env vars:
     CAO_SKILL_DIRS       — extra comma-separated dirs to scan (beyond defaults)
     CAO_SKILL_WRITEBACK  — "1" to enable pull/write-back (default off)
     CAO_SKILL_WRITEBACK_TARGET — preferred pull target: "claude-code" | "opencode" | "hermes"
+    CAO_CLIENT_DIR       — agent-side clone path (default ~/.cao-evolution-client)
 """
 
 from __future__ import annotations
@@ -139,10 +144,17 @@ def pull_skills(
     evolution_dir: str | Path,
     target_dir: Path | None = None,
     backup: bool = True,
+    use_client_clone: bool = False,
 ) -> SyncResult:
     """Pull shared pool skills to local directory.
 
     Only runs if CAO_SKILL_WRITEBACK=1 (unless target_dir is explicitly given).
+
+    Parameters
+    ----------
+    use_client_clone : bool
+        If True, read from ~/.cao-evolution-client/skills/ (agent-side git clone)
+        instead of the Hub's evolution_dir/skills/.
     """
     result = SyncResult()
 
@@ -155,7 +167,13 @@ def pull_skills(
             result.errors.append("No writable target directory found")
             return result
 
-    pool = shared_dir(evolution_dir) / "skills"
+    if use_client_clone:
+        client = Path(os.environ.get("CAO_CLIENT_DIR",
+                                     str(Path.home() / ".cao-evolution-client")))
+        pool = client / "skills"
+    else:
+        pool = shared_dir(evolution_dir) / "skills"
+
     if not pool.exists():
         return result
 

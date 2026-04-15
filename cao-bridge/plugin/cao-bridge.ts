@@ -38,6 +38,115 @@ export default (async ({ client }) => {
   let currentTaskId: string | null = null
   let pendingHeartbeats: Array<{ name: string; prompt: string }> = []
 
+  // ── Agent-side git sync ────────────────────────────────────────────
+  const GIT_REMOTE = process.env.CAO_GIT_REMOTE || ""
+  const CLIENT_DIR = process.env.CAO_CLIENT_DIR || (process.env.HOME + "/.cao-evolution-client")
+
+  function gitSync(): boolean {
+    const { execSync } = require("child_process")
+    if (!GIT_REMOTE) {
+      dbg("git sync skipped: CAO_GIT_REMOTE not set")
+      return false
+    }
+    try {
+      const { existsSync } = require("fs")
+      if (existsSync(CLIENT_DIR + "/.git")) {
+        const branch = (() => {
+          try {
+            const b = execSync("git rev-parse --abbrev-ref HEAD", {
+              cwd: CLIENT_DIR, timeout: 5000, stdio: "pipe",
+            }).toString().trim()
+            return b && b !== "HEAD" ? b : "main"
+          } catch { return "main" }
+        })()
+        execSync(`git fetch --all && git pull --rebase origin ${branch}`, {
+          cwd: CLIENT_DIR, timeout: 30000, stdio: "pipe",
+        })
+        dbg("git pull ok")
+      } else {
+        execSync(`git clone --filter=blob:none "${GIT_REMOTE}" "${CLIENT_DIR}"`, {
+          timeout: 60000, stdio: "pipe",
+        })
+        execSync('git config user.name "cao-agent" && git config user.email "cao-agent@local"', {
+          cwd: CLIENT_DIR, stdio: "pipe",
+        })
+        dbg("git clone ok")
+      }
+      return true
+    } catch (e: any) {
+      dbg("git sync error: " + (e.message || e))
+      return false
+    }
+  }
+
+  function gitPush(message: string = "agent sync"): boolean {
+    const { execSync, spawnSync } = require("child_process")
+    const { existsSync } = require("fs")
+    if (!GIT_REMOTE || !existsSync(CLIENT_DIR + "/.git")) return false
+    try {
+      const branch = (() => {
+        try {
+          const b = execSync("git rev-parse --abbrev-ref HEAD", {
+            cwd: CLIENT_DIR, timeout: 5000, stdio: "pipe",
+          }).toString().trim()
+          return b && b !== "HEAD" ? b : "main"
+        } catch { return "main" }
+      })()
+      // Stage, commit (no-op if clean), pull --rebase, push
+      execSync("git add -A", { cwd: CLIENT_DIR, timeout: 10000, stdio: "pipe" })
+      try {
+        execSync(`git diff --cached --quiet`, { cwd: CLIENT_DIR, stdio: "pipe" })
+        dbg("git push: nothing to commit")
+        return true
+      } catch {
+        // diff --cached returns 1 when there are staged changes
+      }
+      // Use spawnSync to avoid shell injection via message
+      const commitResult = spawnSync("git", ["commit", "-m", `[agent] ${message}`], {
+        cwd: CLIENT_DIR, timeout: 10000, stdio: "pipe",
+      })
+      if (commitResult.status !== 0) {
+        dbg("git commit failed: " + (commitResult.stderr?.toString() || ""))
+        return false
+      }
+      execSync(`git pull --rebase origin ${branch}`, {
+        cwd: CLIENT_DIR, timeout: 30000, stdio: "pipe",
+      })
+      execSync(`git push origin ${branch}`, {
+        cwd: CLIENT_DIR, timeout: 30000, stdio: "pipe",
+      })
+      dbg("git push ok")
+      return true
+    } catch (e: any) {
+      dbg("git push error: " + (e.message || e))
+      return false
+    }
+  }
+
+  function pullSkillsFromClone() {
+    const { existsSync, readdirSync, mkdirSync, cpSync } = require("fs")
+    const srcDir = CLIENT_DIR + "/skills"
+    const oc1 = (process.env.HOME || "") + "/.config/opencode/skills"
+    const tgtDir = existsSync(oc1) ? oc1 : oc1  // default opencode
+    if (!existsSync(srcDir)) return
+    try {
+      mkdirSync(tgtDir, { recursive: true })
+      for (const name of readdirSync(srcDir)) {
+        const skillMd = srcDir + "/" + name + "/SKILL.md"
+        if (existsSync(skillMd)) {
+          cpSync(srcDir + "/" + name, tgtDir + "/" + name, { recursive: true })
+          dbg("synced skill: " + name)
+        }
+      }
+    } catch (e: any) {
+      dbg("skill pull error: " + (e.message || e))
+    }
+  }
+
+  // Initial git sync
+  gitSync()
+  pullSkillsFromClone()
+
   function dbg(msg: string) {
     if (!DEBUG) return
     const { appendFileSync } = require("fs")
@@ -75,10 +184,9 @@ export default (async ({ client }) => {
     })
   }
 
-  async function getGrader(taskId: string): Promise<string | null> {
+  async function getTaskInfo(taskId: string): Promise<{ grader_skill?: string; task_yaml?: string } | null> {
     try {
-      const data = await hub("/evolution/" + taskId + "/grader")
-      return data.grader_code || null
+      return await hub("/evolution/" + taskId)
     } catch { return null }
   }
 
@@ -162,6 +270,8 @@ export default (async ({ client }) => {
   setInterval(pollAndInject, POLL_MS)
   dbg("timer started, interval=" + POLL_MS)
 
+  let pendingGraderTaskId: string | null = null
+
   return {
     event: async (input: any) => {
       const e = input.event
@@ -175,20 +285,85 @@ export default (async ({ client }) => {
       // Session idle → report result, check heartbeat triggers
       if (e.type === "session.idle" && awaitingResult && terminalId) {
         dbg("completed, output len=" + lastOutput.length)
-        await report("completed", lastOutput)
 
-        // Auto-report score if we have a task context and extract heartbeats
-        if (currentTaskId) {
+        // ── Grader score extraction ──────────────────────────────────
+        // If we just ran a grader skill, extract CAO_SCORE from output
+        if (pendingGraderTaskId) {
+          const scoreMatch = lastOutput.match(/CAO_SCORE\s*=\s*(\d*\.?\d+)/)
+          const score = scoreMatch ? parseFloat(scoreMatch[1]) : 0
+          dbg("grader result: score=" + score + " for task=" + pendingGraderTaskId)
           try {
-            const resp = await reportScore(currentTaskId, 0, "auto", lastOutput.substring(0, 500))
+            const resp = await reportScore(
+              pendingGraderTaskId, score,
+              "grader-skill", lastOutput.substring(0, 500),
+            )
             if (HEARTBEAT && resp.heartbeat_prompts?.length) {
               pendingHeartbeats.push(...resp.heartbeat_prompts)
               dbg("heartbeat queued: " + resp.heartbeat_prompts.map((h: any) => h.name).join(","))
             }
+            // Fetch human feedback
+            const feedbackMsg = await fetchFeedback(pendingGraderTaskId)
+            if (feedbackMsg) {
+              pendingHeartbeats.unshift({ name: "human-feedback", prompt: feedbackMsg })
+            }
           } catch (e) {
-            dbg("score report failed: " + e)
+            dbg("grader score report failed: " + e)
           }
-          // Fetch human feedback and inject as context
+          pendingGraderTaskId = null
+          awaitingResult = false
+          lastOutput = ""
+          currentTaskId = null
+
+          gitPush("grader: score submitted")
+          if (gitSync()) pullSkillsFromClone()
+          if (pendingHeartbeats.length > 0) {
+            await injectHeartbeat()
+          } else {
+            await pollAndInject()
+          }
+          return
+        }
+
+        // ── Normal task completion → trigger grader skill ────────────
+        await report("completed", lastOutput)
+
+        if (currentTaskId) {
+          try {
+            const taskInfo = await getTaskInfo(currentTaskId)
+            const graderSkill = taskInfo?.grader_skill || ""
+
+            if (graderSkill) {
+              // Inject grader skill prompt — agent will evaluate its own output
+              dbg("injecting grader skill: " + graderSkill)
+              pendingGraderTaskId = currentTaskId
+              const graderPrompt =
+                `You just completed a task. Now grade your own output using the grader skill.\n\n` +
+                `## Instructions\n` +
+                `Load and follow evo-skills/${graderSkill}/SKILL.md to evaluate the output below.\n\n` +
+                `## Task ID\n${currentTaskId}\n\n` +
+                `## Your Output to Grade\n` +
+                `${lastOutput.substring(0, 3000)}\n\n` +
+                `## Required Output Format\n` +
+                `After evaluation, print exactly one line: CAO_SCORE=<float between 0.0 and 1.0>\n` +
+                `followed by a brief rationale.`
+              awaitingResult = true
+              lastOutput = ""
+              currentTaskId = null
+              await client.tui.appendPrompt({ body: { text: graderPrompt } })
+              await client.tui.submitPrompt()
+              return
+            } else {
+              // No grader skill configured — report score=0 as fallback
+              dbg("no grader_skill for task " + currentTaskId + ", reporting score=0")
+              const resp = await reportScore(currentTaskId, 0, "no-grader", lastOutput.substring(0, 500))
+              if (HEARTBEAT && resp.heartbeat_prompts?.length) {
+                pendingHeartbeats.push(...resp.heartbeat_prompts)
+              }
+            }
+          } catch (e) {
+            dbg("grader trigger failed: " + e)
+          }
+          // Fetch human feedback
           const feedbackMsg = await fetchFeedback(currentTaskId)
           if (feedbackMsg) {
             pendingHeartbeats.unshift({ name: "human-feedback", prompt: feedbackMsg })
@@ -198,6 +373,10 @@ export default (async ({ client }) => {
         awaitingResult = false
         lastOutput = ""
         currentTaskId = null
+
+        // Push local changes (notes, skills) then pull latest
+        gitPush("task completed")
+        if (gitSync()) pullSkillsFromClone()
 
         // Try heartbeat injection or re-poll
         if (pendingHeartbeats.length > 0) {

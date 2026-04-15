@@ -13,12 +13,14 @@ import fcntl
 import logging
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EVOLUTION_DIR = ".cao-evolution"
 _REMOTE_URL = os.environ.get("CAO_EVOLUTION_REMOTE", "")
+_SUBDIRS = ["tasks", "skills", "notes", "notes/_synthesis", "attempts", "graders", "reports"]
 
 
 def shared_dir(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> Path:
@@ -30,17 +32,44 @@ def init_checkpoint_repo(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> P
     """Initialize .cao-evolution/ as a git repo with the expected directory structure.
 
     Flat layout: skills/, notes/, attempts/, graders/, tasks/, reports/ at root.
-    Idempotent — skips if .git already exists. Returns the data dir path.
+    Idempotent — skips if .git already exists.  When a remote is configured,
+    clones from it first so Hub and remote always share commit history.
+    Returns the data dir path.
     """
     sd = shared_dir(evolution_dir)
-    sd.mkdir(parents=True, exist_ok=True)
-
-    # Create required sub-directories (flat multi-repo-ready layout)
-    for sub in ["tasks", "skills", "notes", "notes/_synthesis", "attempts", "graders", "reports"]:
-        (sd / sub).mkdir(parents=True, exist_ok=True)
 
     if (sd / ".git").exists():
+        for sub in _SUBDIRS:
+            (sd / sub).mkdir(parents=True, exist_ok=True)
         return sd
+
+    # If a remote is configured, clone it to avoid divergent histories
+    remote_url = _REMOTE_URL
+    if remote_url:
+        try:
+            sd.parent.mkdir(parents=True, exist_ok=True)
+            _git(
+                sd.parent,
+                "clone", "--filter=blob:none", remote_url, str(sd),
+            )
+            _git(sd, "config", "user.name", "cao-evolution")
+            _git(sd, "config", "user.email", "cao@local")
+            for sub in _SUBDIRS:
+                (sd / sub).mkdir(parents=True, exist_ok=True)
+            logger.info("Cloned remote into Hub repo %s (branch=%s)", sd, _current_branch(sd))
+            return sd
+        except subprocess.CalledProcessError:
+            # Clone failed (empty remote, network error) — fall back to init
+            logger.info("Remote clone failed, falling back to git init")
+            # Clean up partial clone
+            import shutil
+            if sd.exists() and not (sd / ".git").exists():
+                shutil.rmtree(sd, ignore_errors=True)
+
+    # Fallback: fresh git init (first-time use or no remote)
+    sd.mkdir(parents=True, exist_ok=True)
+    for sub in _SUBDIRS:
+        (sd / sub).mkdir(parents=True, exist_ok=True)
 
     try:
         _git(sd, "init")
@@ -50,6 +79,13 @@ def init_checkpoint_repo(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> P
         _git(sd, "add", "-A")
         _git(sd, "commit", "--allow-empty", "-m", "init: cao-evolution shared state")
         _setup_remote(sd)
+        # For fresh init with remote, do initial push to establish remote branch
+        if remote_url:
+            branch = _current_branch(sd)
+            try:
+                _git(sd, "push", "-u", "origin", branch)
+            except subprocess.CalledProcessError:
+                logger.info("Initial push failed (remote may be non-empty)")
         logger.info("Initialized checkpoint repo in %s", sd)
     except Exception:
         logger.warning("Failed to initialize checkpoint repo", exc_info=True)
@@ -61,16 +97,22 @@ def checkpoint(
     evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR,
     agent_id: str = "hub",
     message: str = "checkpoint",
+    on_commit: Callable[[str, list[str]], None] | None = None,
 ) -> str | None:
     """Commit all changes in shared/ and return the commit SHA, or None if nothing changed.
 
     Uses file lock for concurrency safety. Never raises.
+    Args:
+        on_commit: Optional callback(evolution_dir, changed_files) called after
+                   successful commit with the list of changed file paths (relative).
     """
     sd = shared_dir(evolution_dir)
 
     if not (sd / ".git").exists():
         init_checkpoint_repo(evolution_dir)
 
+    sha = None
+    changed: list[str] = []
     lock_path = sd / ".git" / "cao.lock"
     try:
         lock_path.touch(exist_ok=True)
@@ -84,7 +126,20 @@ def checkpoint(
                 cwd=str(sd), capture_output=True,
             )
             if result.returncode == 0:
-                return None  # nothing to commit
+                # Nothing local to commit, but still sync remote
+                # to pick up agent pushes
+                _pulled = _sync_remote(sd)
+                if on_commit is not None and _pulled:
+                    knowledge = [
+                        f for f in _pulled
+                        if f.startswith("notes/") or f.startswith("skills/")
+                    ]
+                    if knowledge:
+                        try:
+                            on_commit(str(evolution_dir), _pulled)
+                        except Exception:
+                            logger.debug("on_commit callback failed", exc_info=True)
+                return None
 
             _git(sd, "commit", "-m", f"[{agent_id}] {message}")
 
@@ -94,9 +149,41 @@ def checkpoint(
             )
             sha = result.stdout.strip()
 
-            _sync_remote(sd)  # push if remote configured
+            # Collect changed files while still under lock
+            try:
+                count_result = subprocess.run(
+                    ["git", "rev-list", "--count", "HEAD"],
+                    cwd=str(sd), capture_output=True, text=True,
+                )
+                commit_count = int(count_result.stdout.strip())
+                if commit_count <= 1:
+                    diff_result = subprocess.run(
+                        ["git", "show", "--name-only", "--format=", "HEAD"],
+                        cwd=str(sd), capture_output=True, text=True,
+                    )
+                else:
+                    diff_result = subprocess.run(
+                        ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+                        cwd=str(sd), capture_output=True, text=True,
+                    )
+                changed = [
+                    f for f in diff_result.stdout.strip().splitlines() if f
+                ]
+            except Exception:
+                logger.debug("Failed to get changed files", exc_info=True)
 
-            return sha
+            _pulled = _sync_remote(sd)  # push if remote configured
+
+        # Release lock BEFORE calling on_commit callback
+        # Merge local changed files with files pulled from remote
+        all_changed = changed + [f for f in _pulled if f not in changed]
+        if on_commit is not None and all_changed:
+            try:
+                on_commit(str(evolution_dir), all_changed)
+            except Exception:
+                logger.debug("on_commit callback failed", exc_info=True)
+
+        return sha
     except Exception:
         logger.warning("Checkpoint failed", exc_info=True)
         return None
@@ -132,6 +219,21 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     )
 
 
+def _current_branch(sd: Path) -> str:
+    """Return the current branch name (e.g. 'master' or 'main')."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(sd), capture_output=True, text=True, check=True,
+        )
+        branch = r.stdout.strip()
+        if branch and branch != "HEAD":
+            return branch
+    except Exception:
+        pass
+    return "main"
+
+
 def _setup_remote(sd: Path) -> None:
     """Configure git remote 'origin' if CAO_EVOLUTION_REMOTE is set."""
     remote_url = _REMOTE_URL
@@ -141,28 +243,63 @@ def _setup_remote(sd: Path) -> None:
         _git(sd, "remote", "add", "origin", remote_url)
         logger.info("Configured remote origin: %s", remote_url)
     except subprocess.CalledProcessError:
-        # Remote may already exist; update it
         try:
             _git(sd, "remote", "set-url", "origin", remote_url)
         except Exception:
             logger.warning("Failed to configure remote", exc_info=True)
 
 
-def _sync_remote(sd: Path) -> None:
-    """Pull (rebase) then push to remote if configured. Never raises."""
+def _sync_remote(sd: Path) -> list[str]:
+    """Pull (rebase) then push to remote if configured. Never raises.
+
+    Returns a list of file paths that were pulled from remote (i.e. files
+    pushed by agents).  Empty list if no remote or nothing new.
+    """
     remote_url = _REMOTE_URL
     if not remote_url:
-        return
+        return []
+    pulled_files: list[str] = []
     try:
-        # Ensure remote is configured
         _setup_remote(sd)
-        # Pull with rebase to integrate others' changes
+        branch = _current_branch(sd)
+
+        # Record HEAD before pull so we can diff afterwards
+        pre_pull = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(sd), capture_output=True, text=True, check=False,
+        )
+        pre_sha = pre_pull.stdout.strip() if pre_pull.returncode == 0 else ""
+
         try:
-            _git(sd, "pull", "--rebase", "origin", "master")
+            _git(sd, "pull", "--rebase", "origin", branch)
         except subprocess.CalledProcessError:
-            # First push or remote empty — that's ok
             pass
-        _git(sd, "push", "-u", "origin", "master")
-        logger.info("Synced to remote")
+
+        # Detect files introduced by pull (agent pushes)
+        if pre_sha:
+            post_pull = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(sd), capture_output=True, text=True, check=False,
+            )
+            post_sha = post_pull.stdout.strip() if post_pull.returncode == 0 else ""
+            if post_sha and post_sha != pre_sha:
+                diff_result = subprocess.run(
+                    ["git", "diff", "--name-only", pre_sha, post_sha],
+                    cwd=str(sd), capture_output=True, text=True, check=False,
+                )
+                if diff_result.returncode == 0:
+                    pulled_files = [
+                        f for f in diff_result.stdout.strip().splitlines() if f
+                    ]
+                    if pulled_files:
+                        logger.info(
+                            "Pulled %d files from remote: %s",
+                            len(pulled_files),
+                            ", ".join(pulled_files[:5]),
+                        )
+
+        _git(sd, "push", "-u", "origin", branch)
+        logger.info("Synced to remote (branch=%s)", branch)
     except Exception:
         logger.warning("Remote sync failed (will retry next checkpoint)", exc_info=True)
+    return pulled_files

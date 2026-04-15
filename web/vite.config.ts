@@ -19,6 +19,8 @@ export default defineConfig({
       '/agents': { target: 'http://localhost:9889', changeOrigin: true },
       '/settings': { target: 'http://localhost:9889', changeOrigin: true },
       '/flows': { target: 'http://localhost:9889', changeOrigin: true },
+      '/evolution': { target: 'http://localhost:9889', changeOrigin: true },
+      '/remotes': { target: 'http://localhost:9889', changeOrigin: true },
     },
   },
 })

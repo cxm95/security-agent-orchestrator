@@ -36,6 +36,9 @@ agent_profile = os.environ.get("CAO_AGENT_PROFILE", "remote-opencode")
 
 bridge = CaoBridge(hub_url=hub_url, agent_profile=agent_profile)
 
+# Recall mode: "full" = git clone + text grep; "selective" = BM25 recall + on-demand fetch
+RECALL_MODE = os.environ.get("CAO_RECALL_MODE", "full")
+
 mcp = FastMCP(
     "cao-bridge",
     instructions=(
@@ -79,14 +82,43 @@ async def cao_report(
 # ── Evolution tools ──────────────────────────────────────────────────
 
 @mcp.tool()
-async def cao_get_grader(task_id: str) -> str:
-    """Fetch grader source code for a task from the Hub.
+async def cao_create_task(
+    task_id: str,
+    name: str = "",
+    description: str = "",
+    grader_skill: str = "",
+    tips: str = "",
+) -> str:
+    """Create a task on the Hub for evolution tracking.
 
-    Returns JSON with grader_code (string) or null if not found.
-    Download this, then run evaluate() locally to get a score.
+    Call this when the user starts a local task that should be tracked by CAO.
+    Args:
+        task_id: Unique task identifier (e.g., "sec-audit-2025")
+        name: Human-readable task name
+        description: What the task involves
+        grader_skill: Evo-skill name for grading (e.g., "security-grader")
+        tips: Comma-separated hints for agents
+    Returns JSON with task_id and created status.
     """
-    code = bridge.get_grader(task_id)
-    return json.dumps({"grader_code": code})
+    tips_list = [t.strip() for t in tips.split(",") if t.strip()] if tips else []
+    result = bridge.create_task(
+        task_id=task_id, name=name or task_id, description=description,
+        grader_skill=grader_skill, tips=tips_list,
+    )
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def cao_get_task(task_id: str) -> str:
+    """Fetch task info from the Hub, including grader_skill name.
+
+    Returns JSON with task_id, task_yaml, grader_skill, attempt_count, best_score.
+    Use grader_skill to know which evo-skill to load for grading.
+    """
+    info = bridge.get_task(task_id)
+    if info is None:
+        return json.dumps({"error": f"Task '{task_id}' not found"})
+    return json.dumps(info)
 
 
 @mcp.tool()
@@ -116,47 +148,6 @@ async def cao_get_leaderboard(task_id: str, top_n: int = 10) -> str:
 
 
 @mcp.tool()
-async def cao_share_note(
-    title: str,
-    content: str,
-    tags: str = "",
-    origin_task: str = "",
-    confidence: str = "medium",
-) -> str:
-    """Share a knowledge note with the team via the Hub.
-
-    Args:
-        title: Note title
-        content: Note body (markdown)
-        tags: Comma-separated tags for categorization
-        origin_task: Task that produced this insight
-        confidence: high/medium/low
-    """
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    result = bridge.share_note(title, content, tags=tag_list,
-                               origin_task=origin_task, confidence=confidence)
-    return json.dumps(result)
-
-
-@mcp.tool()
-async def cao_share_skill(
-    name: str,
-    content: str,
-    tags: str = "",
-) -> str:
-    """Share a reusable skill with the team via the Hub.
-
-    Args:
-        name: Skill name (alphanumeric, hyphens, underscores)
-        content: Skill content (markdown)
-        tags: Comma-separated tags
-    """
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    result = bridge.share_skill(name, content, tags=tag_list)
-    return json.dumps(result)
-
-
-@mcp.tool()
 async def cao_search_knowledge(
     query: str,
     tags: str = "",
@@ -165,9 +156,188 @@ async def cao_search_knowledge(
     """Search shared knowledge (notes + skills) by text and tags.
 
     Returns matching notes and skills with snippets.
+    In selective mode, automatically uses BM25-ranked recall for better results.
     """
-    results = bridge.search_knowledge(query, tags=tags, top_k=top_k)
+    if RECALL_MODE == "selective":
+        results = bridge.recall_knowledge(query, tags=tags, top_k=top_k)
+    else:
+        results = bridge.search_knowledge(query, tags=tags, top_k=top_k)
     return json.dumps(results)
+
+
+@mcp.tool()
+async def cao_recall(
+    query: str,
+    tags: str = "",
+    top_k: int = 10,
+    include_content: bool = False,
+) -> str:
+    """BM25-ranked knowledge recall — more precise than cao_search_knowledge.
+
+    Results are sorted by relevance score. Set include_content=True to get
+    full document body inline (no need for separate cao_sync).
+
+    Args:
+        query: Search query text.
+        tags: Comma-separated tags to filter by.
+        top_k: Maximum number of results.
+        include_content: If True, include full document content in results.
+    """
+    results = bridge.recall_knowledge(
+        query, tags=tags, top_k=top_k, include_content=include_content,
+    )
+    return json.dumps(results)
+
+
+@mcp.tool()
+async def cao_fetch_document(doc_id: str) -> str:
+    """Fetch a specific knowledge document by ID (selective sync).
+
+    Use doc_id from cao_recall results to fetch full content.
+    Format: 'note:<stem>' or 'skill:<name>'.
+    """
+    result = bridge.fetch_document(doc_id)
+    return json.dumps(result)
+
+
+# ── Report / human-feedback tools ────────────────────────────────────
+
+@mcp.tool()
+async def cao_submit_report(
+    task_id: str,
+    findings: str,
+    auto_score: float | None = None,
+) -> str:
+    """Submit a vulnerability report to the Hub and locally register its id.
+
+    Human annotation is asynchronous — the id is stored in the local
+    registry at ~/.cao-evolution-client/reports/registry.json so that
+    cao_fetch_feedbacks can later pick up the result.
+
+    Args:
+        task_id:   Task identifier.
+        findings:  JSON array of findings
+                   [{"description": "...", "severity": "high",
+                     "file_path": "x.py", "line": 42, "category": "sqli"}]
+        auto_score: Optional self-grader score.
+    Returns JSON with ``report_id`` and ``finding_count``.
+    """
+    try:
+        findings_list = json.loads(findings) if isinstance(findings, str) else findings
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"findings must be JSON: {e}"})
+    try:
+        result = bridge.submit_report(
+            task_id=task_id, findings=findings_list, auto_score=auto_score,
+        )
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def cao_fetch_feedbacks(
+    task_id: str = "",
+    template_path: str = "",
+    output_dir: str = "",
+) -> str:
+    """Try to pull human annotations for reports this agent has submitted.
+
+    Walks the local registry of pending report ids, asks the Hub whether
+    each has been annotated yet, and for any that are ready:
+      1. Writes ``<client_dir>/reports/<report_id>.result`` with the
+         annotation payload.
+      2. Updates the registry entry to status=annotated.
+      3. Renders ``evolve_from_feedback.md`` into ``output_dir`` (default:
+         current working directory) using the feedback-fetch skill
+         template. The agent should then read that file to drive the
+         secskill-evo flow.
+
+    Args:
+        task_id:       Restrict to a single task; empty = all tasks.
+        template_path: Explicit path to the markdown template. If empty,
+                       searches env var CAO_FEEDBACK_TEMPLATE, then the
+                       installed feedback-fetch skill, then the in-repo
+                       evo-skills/feedback-fetch/templates/.
+        output_dir:    Directory to write evolve_from_feedback.md into.
+                       Default: current working directory.
+
+    Returns JSON:
+      ``feedback_md_path``  Empty string if nothing new was fetched.
+      ``fetched``           Report ids with freshly pulled annotations.
+      ``pending``           Report ids still awaiting annotation.
+      ``result_files``      Absolute paths to the .result files written.
+    """
+    try:
+        result = bridge.fetch_feedbacks(
+            task_id=task_id,
+            template_path=template_path,
+            output_dir=output_dir,
+        )
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# ── Git sync tools ───────────────────────────────────────────────────
+
+@mcp.tool()
+async def cao_sync() -> str:
+    """Bidirectional sync: push local changes then pull latest from Hub.
+
+    Call at session start and after writing notes/skills locally.
+    Performs: git add + commit + push, then pull from remote.
+    Returns sync status.
+    """
+    try:
+        # Push any local changes first
+        pushed = bridge.push_repo(message="agent sync")
+        # Then pull latest
+        cdir = bridge.sync_repo()
+        return json.dumps({"ok": True, "pushed": pushed, "client_dir": str(cdir)})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+@mcp.tool()
+async def cao_push(message: str = "agent sync") -> str:
+    """Push local changes from ~/.cao-evolution-client/ to the remote.
+
+    Call after writing notes or skills locally (e.g. after cao-reflect).
+    Stages all changes, commits, and pushes to the shared remote.
+
+    Args:
+        message: Commit message describing what changed.
+    """
+    try:
+        ok = bridge.push_repo(message=message)
+        return json.dumps({"ok": ok})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+@mcp.tool()
+async def cao_pull_skills(target_dir: str = "") -> str:
+    """Pull shared skills from the evolution repo into a local directory.
+
+    After cao_sync, this copies skills from ~/.cao-evolution-client/skills/
+    into the agent's local skills directory for automatic loading.
+
+    Args:
+        target_dir: Local directory to write skills into.
+                    Defaults to ~/.config/opencode/skills if empty.
+    """
+    from pathlib import Path
+
+    tdir = Path(target_dir) if target_dir else (
+        Path.home() / ".config" / "opencode" / "skills"
+    )
+    try:
+        bridge.pull_repo()
+        synced = bridge.pull_skills_to_local(tdir)
+        return json.dumps({"ok": True, "synced": synced, "target": str(tdir)})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
 
 
 def main():

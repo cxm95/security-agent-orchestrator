@@ -40,6 +40,8 @@ cat > "$TARGET/.mcp.json" <<EOF
       "env": {
         "CAO_HUB_URL": "${CAO_HUB_URL:-http://127.0.0.1:9889}",
         "CAO_AGENT_PROFILE": "remote-claude-code",
+        "CAO_GIT_REMOTE": "${CAO_GIT_REMOTE:-}",
+        "CAO_CLIENT_DIR": "${CAO_CLIENT_DIR:-$HOME/.cao-evolution-client}",
         "no_proxy": "127.0.0.1,localhost",
         "NO_PROXY": "127.0.0.1,localhost"
       }
