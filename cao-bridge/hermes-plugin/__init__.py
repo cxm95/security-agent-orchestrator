@@ -21,7 +21,8 @@ from pathlib import Path
 # CaoBridge and git_sync live one directory up (cao-bridge/)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cao_bridge import CaoBridge  # noqa: E402
-from git_sync import init_client_repo, pull, push as git_push, skills_dir as client_skills_dir, notes_dir as client_notes_dir  # noqa: E402
+from git_sync import push as git_push, skills_dir as client_skills_dir, notes_dir as client_notes_dir, set_session_dir  # noqa: E402
+from session_manager import create_session, deactivate_session, touch_session  # noqa: E402
 
 from .memory_parser import parse_memory  # noqa: E402
 
@@ -45,12 +46,12 @@ def register(ctx):
 
     def on_start(session):
         """Git pull → register → inject shared knowledge → pull skills to local."""
-        # 1. Git sync — clone or pull latest evolution data
+        # 1. Session init — creates isolated session dir and git sync
         try:
-            init_client_repo()
-            logger.info("Git sync: pulled latest evolution data")
+            sdir = bridge.init_session()
+            logger.info("Session initialized: %s", sdir)
         except Exception:
-            logger.warning("Git sync failed (will use HTTP fallback for knowledge)", exc_info=True)
+            logger.warning("Session init failed", exc_info=True)
 
         # 2. Pull shared skills into hermes local dir
         _pull_skills_from_clone()
@@ -127,12 +128,7 @@ def register(ctx):
             except Exception:
                 logger.debug("Score report for heartbeat failed", exc_info=True)
 
-        # Git pull — pick up our own HTTP writes + others' changes
-        try:
-            pull()
-            logger.info("Git sync: pulled after session end")
-        except Exception:
-            logger.debug("Git pull after session end failed", exc_info=True)
+        bridge.close_session()
 
     def pre_llm(messages, tools):
         """Inject heartbeat prompt if available from score report responses."""

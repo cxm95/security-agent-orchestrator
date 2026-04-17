@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import yaml as _yaml
 
 from cli_agent_orchestrator.evolution.types import Attempt
 
@@ -94,14 +97,15 @@ def format_leaderboard(attempts: list[Attempt]) -> str:
         return "No attempts yet."
 
     lines = [
-        "| Rank | Score | Agent | Title | Time | Run ID |",
-        "|------|-------|-------|-------|------|--------|",
+        "| Rank | Score | Agent | Profile | Title | Time | Run ID |",
+        "|------|-------|-------|---------|-------|------|--------|",
     ]
     for i, a in enumerate(attempts, 1):
         score_s = f"{a.score:.4f}" if a.score is not None else "—"
         title = (a.title[:30] + "…") if len(a.title) > 30 else a.title
         time_s = _fmt_time(a.timestamp)
-        lines.append(f"| {i} | {score_s} | {a.agent_id} | {title} | {time_s} | {a.run_id[:8]} |")
+        profile = a.agent_profile or "—"
+        lines.append(f"| {i} | {score_s} | {a.agent_id} | {profile} | {title} | {time_s} | {a.run_id[:8]} |")
     return "\n".join(lines)
 
 
@@ -110,3 +114,83 @@ def _fmt_time(ts: str) -> str:
         return datetime.fromisoformat(ts).strftime("%m-%d %H:%M")
     except (ValueError, TypeError):
         return ts[:16] if ts else "—"
+
+
+# ── Group aggregation ──────────────────────────────────────────────────
+
+
+def _task_group(evolution_dir: str | Path, task_id: str) -> str:
+    """Read the group field from a task's task.yaml. Returns '' if unset."""
+    yaml_path = Path(evolution_dir) / "tasks" / task_id / "task.yaml"
+    if not yaml_path.exists():
+        return ""
+    try:
+        parsed = _yaml.safe_load(yaml_path.read_text()) or {}
+        return parsed.get("group", "")
+    except Exception:
+        return ""
+
+
+def read_all_group_attempts(
+    evolution_dir: str | Path, group: str
+) -> list[Attempt]:
+    """Read all attempts across tasks that belong to the given group."""
+    tasks_dir = Path(evolution_dir) / "tasks"
+    if not tasks_dir.exists():
+        return []
+    attempts: list[Attempt] = []
+    for td in sorted(tasks_dir.iterdir()):
+        if not td.is_dir():
+            continue
+        if _task_group(evolution_dir, td.name) != group:
+            continue
+        attempts.extend(read_attempts(evolution_dir, td.name))
+    attempts.sort(key=lambda a: a.timestamp)
+    return attempts
+
+
+def group_summary(attempts: list[Attempt]) -> dict[str, Any]:
+    """Aggregate attempts by agent_profile.
+
+    Returns::
+
+        {
+            "profiles": {
+                "remote-opencode": {
+                    "avg_score": 45.0, "max_score": 85, "count": 12,
+                    "per_task": {"cve-1": {"avg": 50, "max": 85, "count": 3}, ...},
+                },
+                ...
+            },
+            "total_attempts": 24,
+        }
+    """
+    from collections import defaultdict
+
+    profiles: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"scores": [], "per_task": defaultdict(list)}
+    )
+    for a in attempts:
+        key = a.agent_profile or a.agent_id
+        if a.score is not None:
+            profiles[key]["scores"].append(a.score)
+            profiles[key]["per_task"][a.task_id].append(a.score)
+
+    result: dict[str, Any] = {}
+    for profile, data in sorted(profiles.items()):
+        scores = data["scores"]
+        per_task = {}
+        for tid, task_scores in sorted(data["per_task"].items()):
+            per_task[tid] = {
+                "avg_score": round(sum(task_scores) / len(task_scores), 2),
+                "max_score": max(task_scores),
+                "count": len(task_scores),
+            }
+        result[profile] = {
+            "avg_score": round(sum(scores) / len(scores), 2) if scores else 0,
+            "max_score": max(scores) if scores else 0,
+            "count": len(scores),
+            "per_task": per_task,
+        }
+
+    return {"profiles": result, "total_attempts": len(attempts)}

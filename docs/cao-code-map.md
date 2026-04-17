@@ -92,14 +92,18 @@ evo-skills/                          平台无关的进化 Skill
 └── cao-pivot/SKILL.md               策略转向
 
 cao-bridge/                          远程 Agent 桥接实现
-├── cao_bridge_mcp.py                [~269行] MCP 桥接服务器（13 工具）
-├── cao_bridge.py                    [~237行] 基础桥接模块
-├── git_sync.py                      [~196行] Git 同步
+├── cao_bridge_mcp.py                [~377行] MCP 桥接服务器（16 工具，含 cao_session_info）
+├── cao_bridge.py                    [~483行] 基础桥接模块（含 session 生命周期）
+├── git_sync.py                      [~247行] Git 同步（session-aware）
+├── session_manager.py               [~262行] Session 隔离管理（create/touch/deactivate/cleanup）
+├── report_registry.py               [~132行] 本地报告登记簿（flock 保护）
+├── cao-session-mgr.sh               Session 管理 CLI（create/list/cleanup/info）
 ├── claude-code/                     Claude Code 集成（CLAUDE.md + hooks + .mcp.json）
 ├── skill/cao-bridge/SKILL.md        Skill 桥接协议文档
-├── plugin/cao-bridge.ts             [~390行] OpenCode 事件驱动插件（含 gitPush）
+├── plugin/cao-bridge.ts             [~443行] OpenCode 事件驱动插件（含 session 隔离）
 ├── hermes-plugin/                   Hermes Agent 集成
-│   ├── __init__.py                  [~239行] Plugin 主逻辑（本地写入 + git push）
+│   ├── __init__.py                  [~236行] Plugin 主逻辑（session-aware）
+│   ├── hermes-sync.sh               独立同步脚本（session-aware）
 │   └── memory_parser.py             [~46行] MEMORY.md 解析器
 └── README.md
 
@@ -429,7 +433,7 @@ evolution 层独立于 services 层，通过 evolution_routes.py 暴露给 HTTP/
 
 ---
 
-## Bridge MCP 工具 (cao_bridge_mcp.py, 13 个)
+## Bridge MCP 工具 (cao_bridge_mcp.py, 16 个)
 
 | 工具名 | 功能 |
 |--------|------|
@@ -443,8 +447,11 @@ evolution 层独立于 services 层，通过 evolution_routes.py 暴露给 HTTP/
 | `cao_search_knowledge` | 搜索共享知识 |
 | `cao_recall` | BM25 排序知识召回 |
 | `cao_fetch_document` | 按 doc_id 获取完整文档 |
+| `cao_submit_report` | 提交漏洞报告 + 本地登记 |
+| `cao_fetch_feedbacks` | 拉取人工标注 + 渲染反馈 md |
 | `cao_sync` | 双向 Git 同步（push + pull） |
 | `cao_push` | Git add + commit + push |
 | `cao_pull_skills` | 拉取共享 skills |
+| `cao_session_info` | 查看当前 session 元数据 |
 
 > **已移除** (Step 20): `cao_share_note`, `cao_share_skill` — 改为本地写入 + `cao_push`

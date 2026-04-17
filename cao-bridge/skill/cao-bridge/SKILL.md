@@ -28,17 +28,32 @@ The `cao-bridge` MCP server must be configured. It provides these tools:
 - `cao_search_knowledge` — Search shared knowledge
 
 **Git sync tools:**
-- `cao_sync` — Clone or pull the shared evolution repo (~/.cao-evolution-client/)
+- `cao_sync` — Clone or pull the shared evolution repo
 - `cao_push` — Stage, commit and push local changes to Hub
 - `cao_pull_skills` — Copy shared skills from the git clone into your local skills dir
+- `cao_session_info` — Show current session metadata (session_id, directory)
+
+## Session Isolation
+
+Each agent instance runs in its own session directory under
+`~/.cao-evolution-client/sessions/<session_id>/`. This prevents git conflicts
+when multiple agents run concurrently on the same machine.
+
+Session lifecycle is automatic:
+- **Created** at session start (git clone into isolated directory)
+- **Active** while the agent is running (last_update refreshed on git ops)
+- **Inactive** when the agent exits (marked, not deleted)
+- **Cleaned up** by `cao-session-mgr cleanup` after expiry
+
+You can check your session with `cao_session_info`.
 
 ## Protocol
 
 ### 0. Sync Shared Knowledge (at session start)
 
-Call `cao_sync` to clone or pull the latest shared evolution data.
-Then call `cao_pull_skills` to copy shared skills into your local skills
-directory so they are available for automatic loading.
+If using the MCP bridge, session init happens automatically (git clone into
+a fresh session directory). Call `cao_pull_skills` to copy shared skills
+into your local skills directory for automatic loading.
 
 ### 1. Register (once, at session start)
 
@@ -78,13 +93,9 @@ If `heartbeat_prompts` is non-empty in the `cao_report_score` response:
 For each prompt in `heartbeat_prompts`:
 1. Read the prompt — it specifies which **evolution skill** to execute.
 2. Load the skill from `evo-skills/` (pulled via `cao_pull_skills`) or
-   from `~/.cao-evolution-client/skills/`.
+   from the session's `skills/` directory.
 3. Execute the skill following its SKILL.md instructions.
-4. After the skill completes, sync results:
-   ```
-   cd ~/.cao-evolution-client && git add -A && git commit -m "heartbeat: <name>" && git push
-   ```
-   Or call `cao_sync` to pull/push.
+4. After the skill completes, call `cao_push` to sync results to Hub.
 
 ### 4.6 Post-Heartbeat Continuation
 
@@ -97,9 +108,9 @@ After all heartbeat actions complete:
 
 Share insights from your work to help the team improve:
 
-- **Notes**: Write a markdown note to `~/.cao-evolution-client/notes/` with YAML frontmatter
+- **Notes**: Write a markdown note to the session's `notes/` directory with YAML frontmatter
   (title, tags, creator) then call `cao_push` to sync to Hub.
-- **Skills**: Write a `SKILL.md` to `~/.cao-evolution-client/skills/<name>/`
+- **Skills**: Write a `SKILL.md` to the session's `skills/<name>/`
   then call `cao_push` to share it with the team.
 - **Search**: Call `cao_search_knowledge(query="...", tags="...")` before starting
   a task to see if others have shared relevant knowledge.

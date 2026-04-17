@@ -36,7 +36,16 @@ DEFAULT_CLIENT_DIR = Path.home() / ".cao-evolution-client"
 
 
 def client_dir() -> Path:
-    return Path(os.environ.get("CAO_CLIENT_DIR", str(DEFAULT_CLIENT_DIR)))
+    """Return the session-aware client directory.
+
+    Delegates to git_sync.client_dir() when session isolation is active,
+    falls back to CAO_CLIENT_DIR or the default.
+    """
+    try:
+        from git_sync import client_dir as _git_client_dir
+        return _git_client_dir()
+    except ImportError:
+        return Path(os.environ.get("CAO_CLIENT_DIR", str(DEFAULT_CLIENT_DIR)))
 
 
 def reports_dir() -> Path:

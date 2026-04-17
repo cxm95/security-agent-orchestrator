@@ -239,8 +239,8 @@ class TestReportMCPTools:
         from cli_agent_orchestrator.mcp_server.evolution_tools import register_evolution_tools
         mcp = FastMCP("test-report-tools")
         register_evolution_tools(mcp)
-        tools = asyncio.run(mcp.list_tools())
-        tool_names = {t.name for t in tools}
+        tools = asyncio.run(mcp.get_tools())
+        tool_names = set(tools.keys())
         assert "cao_submit_report" in tool_names
         assert "cao_fetch_feedback" in tool_names
         assert "cao_list_reports" in tool_names

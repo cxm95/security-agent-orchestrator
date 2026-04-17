@@ -21,6 +21,8 @@ from cli_agent_orchestrator.evolution.attempts import (
     format_leaderboard,
     get_best_score,
     get_leaderboard,
+    group_summary,
+    read_all_group_attempts,
     read_attempts,
     write_attempt,
 )
@@ -106,6 +108,33 @@ class TestAttempt:
             shared_state_hash="abc123",
         )
         assert a2.to_dict()["shared_state_hash"] == "abc123"
+
+    def test_agent_profile_and_batch_roundtrip(self):
+        a = Attempt(
+            run_id="r5", agent_id="a1", task_id="t1",
+            title="with profile", score=0.7, status="improved",
+            timestamp="2026-01-01T00:00:00Z",
+            agent_profile="remote-opencode", batch="batch-1",
+        )
+        d = a.to_dict()
+        assert d["agent_profile"] == "remote-opencode"
+        assert d["batch"] == "batch-1"
+        a2 = Attempt.from_dict(d)
+        assert a2.agent_profile == "remote-opencode"
+        assert a2.batch == "batch-1"
+
+    def test_agent_profile_and_batch_optional(self):
+        a = Attempt(
+            run_id="r6", agent_id="a1", task_id="t1",
+            title="no profile", score=0.5, status="baseline",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        d = a.to_dict()
+        assert "agent_profile" not in d
+        assert "batch" not in d
+        a2 = Attempt.from_dict(d)
+        assert a2.agent_profile == ""
+        assert a2.batch == ""
 
 
 # ── checkpoint ───────────────────────────────────────────────────────────
@@ -438,3 +467,74 @@ class TestRepoManager:
         assert rm.git_root("skills") == tmp_path / "skills"
         assert rm.git_root("notes") == tmp_path / "notes"
         assert rm.git_root("tasks") == tmp_path  # tasks stay in root
+
+
+# ── group aggregation ──────────────────────────────────────────────────
+
+class TestGroupAggregation:
+    @pytest.fixture(autouse=True)
+    def _tmpdir(self, tmp_path):
+        self.evo_dir = str(tmp_path / ".cao-evolution")
+        sd = init_checkpoint_repo(self.evo_dir)
+        import yaml
+        for tid, grp in [("cve-1", "exp-1"), ("cve-2", "exp-1"), ("cve-3", "exp-2")]:
+            task_dir = sd / "tasks" / tid
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "task.yaml").write_text(
+                yaml.dump({"name": tid, "group": grp})
+            )
+
+    def _write(self, run_id, score, task_id="cve-1", agent_profile="", batch=""):
+        a = Attempt(
+            run_id=run_id, agent_id="a1", task_id=task_id,
+            title=f"attempt {run_id}", score=score, status="improved",
+            timestamp="2026-01-01T00:00:00Z",
+            agent_profile=agent_profile, batch=batch,
+        )
+        write_attempt(self.evo_dir, a)
+
+    def test_read_all_group_attempts(self):
+        self._write("r1", 50, task_id="cve-1")
+        self._write("r2", 80, task_id="cve-2")
+        self._write("r3", 90, task_id="cve-3")  # different group
+        attempts = read_all_group_attempts(self.evo_dir, "exp-1")
+        assert len(attempts) == 2
+        task_ids = {a.task_id for a in attempts}
+        assert task_ids == {"cve-1", "cve-2"}
+
+    def test_read_all_group_attempts_empty(self):
+        attempts = read_all_group_attempts(self.evo_dir, "nonexistent")
+        assert attempts == []
+
+    def test_group_summary_by_profile(self):
+        self._write("r1", 50, task_id="cve-1", agent_profile="opencode")
+        self._write("r2", 80, task_id="cve-1", agent_profile="claude-code")
+        self._write("r3", 70, task_id="cve-2", agent_profile="opencode")
+        self._write("r4", 90, task_id="cve-2", agent_profile="claude-code")
+        attempts = read_all_group_attempts(self.evo_dir, "exp-1")
+        summary = group_summary(attempts)
+        assert summary["total_attempts"] == 4
+        profiles = summary["profiles"]
+        assert profiles["opencode"]["avg_score"] == 60.0
+        assert profiles["opencode"]["max_score"] == 70
+        assert profiles["opencode"]["count"] == 2
+        assert profiles["claude-code"]["avg_score"] == 85.0
+        assert profiles["claude-code"]["max_score"] == 90
+
+    def test_group_summary_per_task_breakdown(self):
+        self._write("r1", 50, task_id="cve-1", agent_profile="opencode")
+        self._write("r2", 70, task_id="cve-2", agent_profile="opencode")
+        attempts = read_all_group_attempts(self.evo_dir, "exp-1")
+        summary = group_summary(attempts)
+        per_task = summary["profiles"]["opencode"]["per_task"]
+        assert "cve-1" in per_task
+        assert "cve-2" in per_task
+        assert per_task["cve-1"]["avg_score"] == 50.0
+        assert per_task["cve-2"]["avg_score"] == 70.0
+
+    def test_format_leaderboard_includes_profile(self):
+        self._write("r1", 80, agent_profile="opencode")
+        lb = get_leaderboard(self.evo_dir, "cve-1")
+        text = format_leaderboard(lb)
+        assert "Profile" in text
+        assert "opencode" in text

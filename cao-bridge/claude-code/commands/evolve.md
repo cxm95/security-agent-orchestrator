@@ -5,7 +5,7 @@ description: Trigger CAO evolution cycle — reflect, report score, share notes
 Please perform the following evolution steps:
 
 1. Call `cao_report_score` to evaluate your most recent work on the current task.
-   Provide a meaningful title and score (0.0–1.0).
+   Provide a meaningful title and score (0-100 integer).
 
 2. Reflect on what worked well and what didn't in your approach.
 

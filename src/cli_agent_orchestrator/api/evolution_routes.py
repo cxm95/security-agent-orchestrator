@@ -31,6 +31,8 @@ from cli_agent_orchestrator.evolution.attempts import (
     format_leaderboard,
     get_best_score,
     get_leaderboard,
+    group_summary,
+    read_all_group_attempts,
     read_attempts,
     write_attempt,
 )
@@ -108,6 +110,8 @@ class TaskCreate(BaseModel):
     tips: list[str] = []
     eval_data_path: str = ""
     created_by: str = ""
+    group: str = ""
+    group_tags: list[str] = []
     force: bool = False  # allow overwrite on update (agent-side wins)
 
 
@@ -118,6 +122,8 @@ class ScoreReport(BaseModel):
     evolution_signals: dict[str, Any] | None = None  # transparent multi-source signals
     title: str = ""
     feedback: str = ""
+    agent_profile: str = ""
+    batch: str = ""
 
 
 class HeartbeatPrompt(BaseModel):
@@ -201,6 +207,8 @@ async def create_task(body: TaskCreate) -> dict[str, Any]:
     grader_skill = body.grader_skill or existing.get("grader_skill", "")
     created_by = body.created_by or existing.get("created_by", "")
     eval_data = body.eval_data_path or existing.get("eval_data_path", "")
+    group = body.group or existing.get("group", "")
+    group_tags = body.group_tags or existing.get("group_tags", [])
 
     task_data: dict[str, Any] = {"name": name, "description": desc}
     if grader_skill:
@@ -211,6 +219,10 @@ async def create_task(body: TaskCreate) -> dict[str, Any]:
         task_data["eval_data_path"] = eval_data
     if created_by:
         task_data["created_by"] = created_by
+    if group:
+        task_data["group"] = group
+    if group_tags:
+        task_data["group_tags"] = list(group_tags)
     task_data["last_updated"] = datetime.now(timezone.utc).isoformat()
     (task_dir / "task.yaml").write_text(
         _yaml.dump(task_data, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -223,16 +235,42 @@ async def create_task(body: TaskCreate) -> dict[str, Any]:
 
 
 @router.get("/tasks")
-async def list_tasks() -> list[dict[str, str]]:
+async def list_tasks(group: str = Query("", description="Filter by group name")) -> list[dict[str, Any]]:
     sd = shared_dir(EVOLUTION_DIR)
     tasks_dir = sd / "tasks"
     if not tasks_dir.exists():
         return []
     result = []
     for d in sorted(tasks_dir.iterdir()):
-        if d.is_dir() and (d / "task.yaml").exists():
-            result.append({"task_id": d.name, "path": str(d)})
+        if not d.is_dir() or not (d / "task.yaml").exists():
+            continue
+        entry: dict[str, Any] = {"task_id": d.name, "path": str(d)}
+        try:
+            parsed = _yaml.safe_load((d / "task.yaml").read_text()) or {}
+        except Exception:
+            parsed = {}
+        entry["group"] = parsed.get("group", "")
+        if group and entry["group"] != group:
+            continue
+        result.append(entry)
     return result
+
+
+@router.get("/groups/{group}/summary")
+async def get_group_summary(group: str) -> dict[str, Any]:
+    """Aggregate scores across all tasks in a group, broken down by agent_profile."""
+    _validate_path_id(group, "group")
+    attempts = read_all_group_attempts(EVOLUTION_DIR, group)
+    if not attempts:
+        raise HTTPException(404, f"No attempts found for group '{group}'")
+    scored = [a for a in attempts if a.score is not None]
+    scored.sort(key=lambda a: a.score, reverse=True)  # type: ignore[arg-type]
+    return {
+        "group": group,
+        **group_summary(attempts),
+        "leaderboard": [a.to_dict() for a in scored[:50]],
+        "formatted": format_leaderboard(scored[:50]),
+    }
 
 
 @router.get("/{task_id}")
@@ -281,6 +319,8 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
         status=determined_status,
         timestamp=datetime.now(timezone.utc).isoformat(),
         feedback=body.feedback,
+        agent_profile=body.agent_profile,
+        batch=body.batch,
         score_detail=body.score_detail,
         evolution_signals=body.evolution_signals,
     )
@@ -339,9 +379,21 @@ async def submit_score(task_id: str, body: ScoreReport) -> ScoreResponse:
 # ── Leaderboard & attempts ──────────────────────────────────────────────
 
 @router.get("/{task_id}/leaderboard")
-async def leaderboard(task_id: str, top_n: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+async def leaderboard(
+    task_id: str,
+    top_n: int = Query(20, ge=1, le=100),
+    agent_profile: str = Query("", description="Filter by agent profile"),
+    batch: str = Query("", description="Filter by batch"),
+) -> dict[str, Any]:
     _validate_path_id(task_id, "task_id")
-    lb = get_leaderboard(EVOLUTION_DIR, task_id, top_n)
+    all_attempts = read_attempts(EVOLUTION_DIR, task_id)
+    scored = [a for a in all_attempts if a.score is not None]
+    if agent_profile:
+        scored = [a for a in scored if a.agent_profile == agent_profile]
+    if batch:
+        scored = [a for a in scored if a.batch == batch]
+    scored.sort(key=lambda a: a.score, reverse=True)  # type: ignore[arg-type]
+    lb = scored[:top_n]
     return {
         "task_id": task_id,
         "entries": [a.to_dict() for a in lb],
@@ -350,9 +402,24 @@ async def leaderboard(task_id: str, top_n: int = Query(20, ge=1, le=100)) -> dic
 
 
 @router.get("/{task_id}/attempts")
-async def list_attempts(task_id: str) -> list[dict[str, Any]]:
+async def list_attempts(
+    task_id: str,
+    agent_profile: str = Query("", description="Filter by agent profile"),
+    batch: str = Query("", description="Filter by batch"),
+    since: str = Query("", description="ISO 8601 lower bound on timestamp"),
+    until: str = Query("", description="ISO 8601 upper bound on timestamp"),
+) -> list[dict[str, Any]]:
     _validate_path_id(task_id, "task_id")
-    return [a.to_dict() for a in read_attempts(EVOLUTION_DIR, task_id)]
+    attempts = read_attempts(EVOLUTION_DIR, task_id)
+    if agent_profile:
+        attempts = [a for a in attempts if a.agent_profile == agent_profile]
+    if batch:
+        attempts = [a for a in attempts if a.batch == batch]
+    if since:
+        attempts = [a for a in attempts if a.timestamp >= since]
+    if until:
+        attempts = [a for a in attempts if a.timestamp <= until]
+    return [a.to_dict() for a in attempts]
 
 
 # ── Knowledge: notes ─────────────────────────────────────────────────────

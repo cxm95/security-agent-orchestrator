@@ -40,7 +40,44 @@ export default (async ({ client }) => {
 
   // ── Agent-side git sync ────────────────────────────────────────────
   const GIT_REMOTE = process.env.CAO_GIT_REMOTE || ""
-  const CLIENT_DIR = process.env.CAO_CLIENT_DIR || (process.env.HOME + "/.cao-evolution-client")
+  const SCRIPT_DIR = __dirname + "/.."  // cao-bridge/ directory
+  let CLIENT_DIR = process.env.CAO_CLIENT_DIR || ""
+
+  function initSession(): string {
+    if (CLIENT_DIR) return CLIENT_DIR  // explicit override
+    if (!GIT_REMOTE) return process.env.HOME + "/.cao-evolution-client"  // legacy fallback
+    try {
+      const { spawnSync } = require("child_process")
+      const result = spawnSync("python3", [
+        "-c",
+        "import sys, os; sys.path.insert(0, os.environ['_CAO_SCRIPT_DIR']); " +
+        "from session_manager import create_session; " +
+        "print(create_session(os.environ['_CAO_REMOTE'], agent_profile=os.environ['_CAO_PROFILE']))",
+      ], {
+        timeout: 60000, stdio: "pipe",
+        env: { ...process.env, _CAO_SCRIPT_DIR: SCRIPT_DIR, _CAO_REMOTE: GIT_REMOTE, _CAO_PROFILE: PROFILE },
+      })
+      const out = result.stdout?.toString().trim()
+      if (result.status === 0 && out) {
+        dbg("session dir: " + out)
+        return out
+      }
+    } catch (e: any) {
+      dbg("session init failed: " + (e.message || e))
+    }
+    return process.env.HOME + "/.cao-evolution-client"  // fallback
+  }
+
+  CLIENT_DIR = initSession()
+
+  function pySessionCmd(code: string, extraEnv: Record<string, string> = {}): boolean {
+    const { spawnSync } = require("child_process")
+    const r = spawnSync("python3", ["-c", code], {
+      timeout: 10000, stdio: "pipe",
+      env: { ...process.env, _CAO_SCRIPT_DIR: SCRIPT_DIR, _CAO_DIR: CLIENT_DIR, ...extraEnv },
+    })
+    return r.status === 0
+  }
 
   function gitSync(): boolean {
     const { execSync } = require("child_process")
@@ -63,14 +100,28 @@ export default (async ({ client }) => {
           cwd: CLIENT_DIR, timeout: 30000, stdio: "pipe",
         })
         dbg("git pull ok")
+        try {
+          pySessionCmd(
+            "import sys, os; sys.path.insert(0, os.environ['_CAO_SCRIPT_DIR']); " +
+            "from pathlib import Path; from session_manager import touch_session; " +
+            "touch_session(Path(os.environ['_CAO_DIR']))"
+          )
+        } catch {}
       } else {
-        execSync(`git clone --filter=blob:none "${GIT_REMOTE}" "${CLIENT_DIR}"`, {
+        const { spawnSync } = require("child_process")
+        spawnSync("git", ["clone", "--filter=blob:none", GIT_REMOTE, CLIENT_DIR], {
           timeout: 60000, stdio: "pipe",
         })
-        execSync('git config user.name "cao-agent" && git config user.email "cao-agent@local"', {
-          cwd: CLIENT_DIR, stdio: "pipe",
-        })
+        spawnSync("git", ["config", "user.name", "cao-agent"], { cwd: CLIENT_DIR, stdio: "pipe" })
+        spawnSync("git", ["config", "user.email", "cao-agent@local"], { cwd: CLIENT_DIR, stdio: "pipe" })
         dbg("git clone ok")
+        try {
+          pySessionCmd(
+            "import sys, os; sys.path.insert(0, os.environ['_CAO_SCRIPT_DIR']); " +
+            "from pathlib import Path; from session_manager import touch_session; " +
+            "touch_session(Path(os.environ['_CAO_DIR']))"
+          )
+        } catch {}
       }
       return true
     } catch (e: any) {
@@ -143,8 +194,7 @@ export default (async ({ client }) => {
     }
   }
 
-  // Initial git sync
-  gitSync()
+  // Initial skill sync (git clone handled by initSession)
   pullSkillsFromClone()
 
   function dbg(msg: string) {
@@ -270,6 +320,21 @@ export default (async ({ client }) => {
   setInterval(pollAndInject, POLL_MS)
   dbg("timer started, interval=" + POLL_MS)
 
+  // Deactivate session on process exit
+  if (CLIENT_DIR && GIT_REMOTE && !process.env.CAO_CLIENT_DIR) {
+    process.on("beforeExit", () => {
+      try {
+        gitPush("session end")
+        pySessionCmd(
+          "import sys, os; sys.path.insert(0, os.environ['_CAO_SCRIPT_DIR']); " +
+          "from pathlib import Path; from session_manager import deactivate_session; " +
+          "deactivate_session(Path(os.environ['_CAO_DIR']))"
+        )
+        dbg("session deactivated")
+      } catch {}
+    })
+  }
+
   let pendingGraderTaskId: string | null = null
 
   return {
@@ -344,8 +409,8 @@ export default (async ({ client }) => {
                 `## Your Output to Grade\n` +
                 `${lastOutput.substring(0, 3000)}\n\n` +
                 `## Required Output Format\n` +
-                `After evaluation, print exactly one line: CAO_SCORE=<float between 0.0 and 1.0>\n` +
-                `followed by a brief rationale.`
+                `After evaluation, print exactly one line: CAO_SCORE=<integer 0-100>\n` +
+                `Then state Feasibility: FEASIBLE or INFEASIBLE, followed by a brief rationale.`
               awaitingResult = true
               lastOutput = ""
               currentTaskId = null

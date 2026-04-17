@@ -77,6 +77,8 @@ class Attempt:
     status: str  # improved | baseline | regressed | crashed | timeout
     timestamp: str  # ISO 8601
     feedback: str = ""
+    agent_profile: str = ""
+    batch: str = ""
     shared_state_hash: str | None = None
     score_detail: dict[str, float] | None = None  # multi-dimension scores from grader
     evolution_signals: dict[str, Any] | None = None  # transparent multi-source signal pack
@@ -94,6 +96,10 @@ class Attempt:
         }
         if self.shared_state_hash is not None:
             d["shared_state_hash"] = self.shared_state_hash
+        if self.agent_profile:
+            d["agent_profile"] = self.agent_profile
+        if self.batch:
+            d["batch"] = self.batch
         if self.score_detail is not None:
             d["score_detail"] = self.score_detail
         if self.evolution_signals is not None:
@@ -114,6 +120,8 @@ class Attempt:
             status=data.get("status", "crashed"),
             timestamp=data["timestamp"],
             feedback=data.get("feedback", ""),
+            agent_profile=data.get("agent_profile", ""),
+            batch=data.get("batch", ""),
             shared_state_hash=data.get("shared_state_hash"),
             score_detail=data.get("score_detail"),
             evolution_signals=data.get("evolution_signals"),

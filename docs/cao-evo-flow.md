@@ -25,7 +25,7 @@ Evolution 系统受 CORAL 启发，核心原则：
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                               Remote Agent                                    │
 │                                                                              │
-│  ~/.cao-evolution-client/                     (git 克隆, 共享知识源)          │
+│  ~/.cao-evolution-client/sessions/<session_id>/   (per-instance git 克隆)     │
 │  ├── skills/  notes/  tasks/                  ← cao_sync / cao_push          │
 │  └── reports/                                 ← 本地运行时状态 ❌ 不入 git    │
 │      ├── registry.json                          (flock 保护, pending→annotated)
@@ -543,7 +543,7 @@ Agent 可通过不同方式处理心跳：
 | `report_registry.py` | `cao-bridge/` | `registry.json` 的 flock 读写 (add / list_pending / mark_annotated / mark_consumed) |
 | `feedback-fetch` skill | `evo-skills/feedback-fetch/SKILL.md` | 指导 agent 何时调 MCP、如何把产物交给 `secskill-evo` |
 | `evolve_from_feedback.md` 模板 | `evo-skills/feedback-fetch/templates/` | 渲染结果文件的骨架，跟 skill 走（不嵌在 MCP 代码里） |
-| `.git/info/exclude` (agent 侧) | `~/.cao-evolution-client/.git/info/exclude` | 自动追加 `reports/`，本地运行时状态不入共享 repo |
+| `.git/info/exclude` (agent 侧) | `<session_dir>/.git/info/exclude` | 自动追加 `reports/` + `.session.json`，本地运行时状态不入共享 repo |
 
 **完整时序**
 
@@ -585,7 +585,7 @@ Agent 可通过不同方式处理心跳：
      → cao_report_score (新版本闭环)  ──────▶│                         │
 ```
 
-**登记簿结构** (`~/.cao-evolution-client/reports/registry.json`)
+**登记簿结构** (`<session_dir>/reports/registry.json`)
 
 ```jsonc
 {
@@ -629,11 +629,13 @@ Agent 可通过不同方式处理心跳：
 ```
 cao-bridge/
 ├── cao_bridge.py          # 主 Bridge 逻辑（get_task, report_score, submit_report,
-│                          #   fetch_feedbacks 等）
-├── cao_bridge_mcp.py      # MCP 集成（15 个工具，含 cao_submit_report /
-│                          #   cao_fetch_feedbacks）
+│                          #   fetch_feedbacks, init_session, close_session 等）
+├── cao_bridge_mcp.py      # MCP 集成（16 个工具，含 cao_submit_report /
+│                          #   cao_fetch_feedbacks / cao_session_info）
+├── session_manager.py     # Session 隔离管理（create/touch/deactivate/cleanup）
 ├── report_registry.py     # 本地 registry.json 的 flock 读写（§6.4）
-├── git_sync.py            # Git 同步工具（_ensure_local_excludes 排除 reports/）
+├── git_sync.py            # Git 同步工具（session-aware, _ensure_local_excludes）
+├── cao-session-mgr.sh     # Session 管理 CLI（create/list/cleanup/info）
 ├── skill/                 # Skill Bridge（SKILL.md 指导式）
 ├── plugin/                # Plugin Bridge（OpenCode, Copilot）
 ├── claude-code/           # Claude Code 适配
@@ -642,7 +644,7 @@ cao-bridge/
 
 | Bridge | 入口文件 | Grader 触发方式 | 心跳处理方式 |
 |--------|----------|----------------|-------------|
-| **MCP Bridge** | `cao_bridge_mcp.py` (13 工具) | Agent 手动 `cao_get_task` -> 加载 grader skill | ScoreResponse 中的心跳 -> Agent 直接处理 |
+| **MCP Bridge** | `cao_bridge_mcp.py` (16 工具) | Agent 手动 `cao_get_task` -> 加载 grader skill | ScoreResponse 中的心跳 -> Agent 直接处理 |
 | **Skill Bridge** | `skill/cao-bridge/SKILL.md` | Step 4: "cao_get_task → 加载 grader skill" | Step 4.5: "检查 heartbeat prompts" |
 | **Plugin Bridge** | `plugin/cao-bridge.ts` | 自动: session.idle → getTaskInfo → 注入 grader prompt → 提取 CAO_SCORE | Plugin 自动注入 heartbeat prompts |
 | **Claude Code** | `claude-code/CLAUDE.md` | 同 MCP Bridge（CLAUDE.md 列出 cao_get_task） | Hooks + MCP 配置 |
@@ -666,7 +668,7 @@ Agent 本地写入 + git push（唯一写入路径）
   Agent 完成反思/整合/转向
     │
     ▼
-  在 ~/.cao-evolution-client/notes/ 下创建 .md 文件
+  在 <session_dir>/notes/ 下创建 .md 文件
     │  → 格式: YAML frontmatter + Markdown 正文
     │  → 调用 cao_push (MCP) 或手动 git add && git commit && git push
     ▼
@@ -688,7 +690,7 @@ Agent 本地写入 + git push（唯一写入路径）
 | `cao_recall(query, top_k)` | BM25 排序召回 | 精确排序的知识检索 |
 | `cao_get_shared_notes(tags)` | 按 tag 列出 | 获取特定类型全部笔记 |
 | `cao_fetch_document(doc_id)` | 按 ID 获取 | 获取完整文档内容 |
-| Git sync 后本地读取 | `~/.cao-evolution-client/notes/` | 离线/批量读取 |
+| Git sync 后本地读取 | `<session_dir>/notes/` | 离线/批量读取 |
 
 #### 8.1.3 Note 的类型与产生时机
 
@@ -745,7 +747,7 @@ Skill 有两种存在形式，生命周期不同：
 Agent 发现可复用技巧/工具
   │
   ▼
-本地写入 ~/.cao-evolution-client/skills/{name}/SKILL.md
+本地写入 <session_dir>/skills/{name}/SKILL.md
   │  → YAML frontmatter + 技能正文
   │  → 调用 cao_push (MCP) 或手动 git add && git commit && git push
   ▼
@@ -758,7 +760,7 @@ Hub 侧 checkpoint() → _sync_remote() → git pull
   ├─ cao_search_knowledge(q)      → 搜索匹配的技能
   ├─ cao_recall(query)            → BM25 排序召回
   ├─ cao_sync() + cao_pull_skills() → git pull 后拷贝到本地技能目录
-  └─ 本地读取 ~/.cao-evolution-client/skills/{name}/SKILL.md
+  └─ 本地读取 <session_dir>/skills/{name}/SKILL.md
 ```
 
 > **注意**：`cao_share_skill` MCP 工具已移除。Hub 内部仍可通过 HTTP POST 创建 skill。
@@ -783,7 +785,7 @@ Step 2-5: 在工作区中迭代改进
   ▼
 Step 6: 提交进化结果（如果有提升）
   │  → 拷贝进化后的 skill 回技能目录
-  │  → cd ~/.cao-evolution-client && git add -A && git commit && git push
+  │  → 通过 cao_sync MCP 工具或 git push 到 session 目录
   │  → 或调用 cao_sync() MCP 工具
   │
   ▼
@@ -847,21 +849,61 @@ Step 7: 继续主任务，cao_report_score → 闭环
 
 ## 9. Git 同步架构
 
+### 9.1 Session 隔离
+
+多个 Remote Agent 实例可在同一台机器上并发运行。每个实例拥有独立的 session 目录，
+避免 git 操作竞态和文件覆盖：
+
 ```
-Hub 侧                                    Agent 侧
-┌───────────────────────────┐              ┌──────────────────────────┐
-│ .cao-evolution/           │   git sync   │ ~/.cao-evolution-client/ │
-│ (主仓库，扁平目录)         │◀────────────▶│ (克隆，完整副本)          │
-│                           │              │                          │
-│ ├── tasks/{task_id}/      │  git_sync.py │ ├── tasks/               │
-│ │   └── task.yaml         │  push / pull │ ├── skills/              │
-│ ├── attempts/{task_id}/   │              │ ├── notes/               │
-│ │   └── {run_id}.json     │              │ │   └── _synthesis/      │
-│ ├── skills/               │              │ ├── attempts/            │
-│ ├── notes/                │              │ ├── graders/             │
-│ │   └── _synthesis/       │              │ └── reports/             │
-│ ├── graders/              │              │                          │
-│ ├── reports/              │              └──────────────────────────┘
+~/.cao-evolution-client/
+├── sessions/
+│   ├── 20260416T103000-a3f2b1c8/     ← session A（active）
+│   │   ├── .git/                      ← 独立 git clone
+│   │   ├── .session.json              ← 元数据（status, last_update, pid）
+│   │   ├── skills/ notes/ tasks/ attempts/ graders/
+│   │   └── reports/                   ← 本地运行时状态（不入 git）
+│   │       └── registry.json
+│   ├── 20260416T110500-d4e5f6a7/     ← session B（active）
+│   └── 20260415T090000-b2c3d4e5/     ← session C（inactive，待清理）
+└── .base.json                         ← 全局配置（预留）
+```
+
+**Session 生命周期：**
+
+```
+创建 ──→ active ──→ inactive ──→ 清理删除
+ │                    │              │
+ │  bridge/plugin     │  bridge/     │  cao-session-mgr
+ │  init_session()    │  close_      │  cleanup
+ │  (git clone)       │  session()   │  (max_age + pid 检测)
+```
+
+**管理命令：**
+
+```bash
+cao-session-mgr create --git-remote <url>    # 创建新 session
+cao-session-mgr list [--status active]       # 列出 session
+cao-session-mgr cleanup [--max-age 24]       # 清理过期 inactive session
+cao-session-mgr info <session_id>            # 查看 session 详情
+```
+
+### 9.2 Hub ↔ Agent 同步
+
+```
+Hub 侧                                    Agent 侧（每个 session 独立）
+┌───────────────────────────┐              ┌──────────────────────────────────┐
+│ .cao-evolution/           │   git sync   │ ~/.cao-evolution-client/sessions │
+│ (主仓库，扁平目录)         │◀────────────▶│ /<session_id>/                   │
+│                           │              │                                  │
+│ ├── tasks/{task_id}/      │  git_sync.py │ ├── tasks/                       │
+│ │   └── task.yaml         │  push / pull │ ├── skills/                      │
+│ ├── attempts/{task_id}/   │              │ ├── notes/                       │
+│ │   └── {run_id}.json     │              │ │   └── _synthesis/              │
+│ ├── skills/               │              │ ├── attempts/                    │
+│ ├── notes/                │              │ ├── graders/                     │
+│ │   └── _synthesis/       │              │ └── reports/  (gitignored)       │
+│ ├── graders/              │              │                                  │
+│ ├── reports/              │              └──────────────────────────────────┘
 │ └── heartbeat/            │
 │     (gitignored)          │
 └───────────────────────────┘
@@ -876,13 +918,15 @@ _SUBDIRS = ["tasks", "skills", "notes", "notes/_synthesis",
 
 **关键机制：**
 
-- **扁平布局**: 无 `shared/` 中间层，所有子目录直接位于 `.cao-evolution/` 下
+- **Session 隔离**: 每个 Agent 实例在 `sessions/<session_id>/` 下拥有独立 git clone
+- **扁平布局**: 无 `shared/` 中间层，所有子目录直接位于 session 目录下
 - **Checkpoint**: 每次 `submit_score` 调用时自动执行 `git add -A && git commit`
-- **并发安全**: `checkpoint.py` 使用 `fcntl.flock()` 文件锁 (行 120)
-- **目录初始化**: `init_checkpoint_repo()` (行 31) 创建上述子目录结构
+- **并发安全**: Hub 侧 `checkpoint.py` 使用 `fcntl.flock()` 文件锁；Agent 侧通过 session 隔离避免竞态
+- **目录初始化**: `session_manager.create_session()` 创建 session 目录 + git clone + 子目录结构
 - **远端同步**: `_setup_remote()` (行 185) + `_sync_remote()` (行 200) — pull(rebase) then push
 - **历史查询**: `checkpoint_history()` (行 177) 获取最近提交记录
-- **Agent 侧**: `git_sync.py` 执行 `git clone --filter=blob:none` 或 `git pull --rebase` 到 `~/.cao-evolution-client/`
+- **Agent 侧**: `git_sync.py` 通过 `client_dir()` 自动定位当前 session 目录
+- **Session 清理**: `cao-session-mgr cleanup` 移除过期 inactive session，标记 stale active session
 
 ---
 
@@ -907,7 +951,7 @@ _SUBDIRS = ["tasks", "skills", "notes", "notes/_synthesis",
 
 > **已移除**：`cao_share_note`、`cao_share_skill`（Agent 通过 git push 写入知识）
 
-### 10.2 Bridge 侧工具（`cao_bridge_mcp.py`，15 个工具）
+### 10.2 Bridge 侧工具（`cao_bridge_mcp.py`，16 个工具）
 
 Agent 端通过 Bridge MCP 访问 Hub，以下为 Agent 可调用的工具：
 
@@ -929,6 +973,7 @@ Agent 端通过 Bridge MCP 访问 Hub，以下为 Agent 可调用的工具：
 | **同步** | `cao_sync` | 双向同步（先 push 再 pull） |
 | | `cao_push` | 本地变更提交并 push 到 Hub |
 | | `cao_pull_skills` | 拷贝共享 skills 到本地 |
+| **Session** | `cao_session_info` | 查看当前 session 元数据（session_id, 目录, 状态） |
 
 > **已移除**：`cao_share_note`、`cao_share_skill`（改用 local write + `cao_push`）
 
@@ -1010,7 +1055,9 @@ HeartbeatAction(
 | Pivot plateau threshold | `5` | pivot 触发的 plateau 阈值 |
 | Consolidate interval | `5` | consolidate 的全局评估间隔 |
 | `.cao-evolution/` | — | Hub 数据目录 |
-| `.cao-evolution-client/` | — | Agent 侧克隆目录 |
+| `.cao-evolution-client/sessions/` | — | Agent 侧 session 目录（每实例独立 git clone） |
+| `CAO_CLIENT_BASE_DIR` | `~/.cao-evolution-client` | Session 根目录覆盖 |
+| `CAO_CLIENT_DIR` | — | 完整覆盖 session 目录（跳过 session_manager，向后兼容） |
 | `heartbeat/*.json` | gitignored | Agent 心跳状态（不跨 Agent 共享） |
 
 ---
@@ -1061,6 +1108,7 @@ print(prompt)
 | `evolution/heartbeat.py` | `_load_prompt()` 行 21, `DEFAULT_PROMPTS` 行 26, `HeartbeatRunner.check()` 行 53, `_check_plateau()` 行 71, `render_prompt()` 行 136, `check_triggers()` 行 152 |
 | `evolution/checkpoint.py` | `init_checkpoint_repo()` 行 31, `checkpoint()` 行 96 (含 on_commit 回调), `checkpoint_history()` 行 177, `fcntl.flock()` 行 120 |
 | `mcp_server/evolution_tools.py` | Hub 侧 12 工具: `cao_report_score()`, `cao_recall()`, `cao_fetch_document()`, `cao_create_task()` 等 |
-| `cao-bridge/cao_bridge.py` | `get_task()` ~行 202, `create_task()` ~行 184, `report_score()` |
-| `cao-bridge/cao_bridge_mcp.py` | Bridge 侧 13 工具: `cao_get_task`, `cao_create_task`, `cao_push`, `cao_recall` 等 |
+| `cao-bridge/cao_bridge.py` | `get_task()` ~行 227, `create_task()` ~行 209, `report_score()`, `init_session()`, `close_session()` |
+| `cao-bridge/cao_bridge_mcp.py` | Bridge 侧 16 工具: `cao_get_task`, `cao_create_task`, `cao_push`, `cao_recall`, `cao_session_info` 等 |
+| `cao-bridge/session_manager.py` | `create_session()`, `deactivate_session()`, `cleanup_sessions()`, `touch_session()` |
 | `cao-bridge/plugin/cao-bridge.ts` | OpenCode Plugin: session.idle → 二阶段 grader 流程 |

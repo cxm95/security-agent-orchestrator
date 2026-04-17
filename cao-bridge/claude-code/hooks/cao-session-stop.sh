@@ -2,13 +2,12 @@
 # CAO Bridge — Claude Code Stop hook
 # Auto-reports session completion, pushes local skills, and syncs git.
 #
-# Env: CAO_HUB_URL, CAO_STATE_FILE, CAO_CLIENT_DIR
+# Env: CAO_HUB_URL, CAO_STATE_FILE
 
 set -euo pipefail
 
 HUB="${CAO_HUB_URL:-http://127.0.0.1:9889}"
-STATE_FILE="${CAO_STATE_FILE:-/tmp/cao-claude-state.json}"
-CLIENT_DIR="${CAO_CLIENT_DIR:-$HOME/.cao-evolution-client}"
+STATE_FILE="${CAO_STATE_FILE:-/tmp/cao-claude-state-$$.json}"
 
 # Read terminal_id from state file
 if [ ! -f "$STATE_FILE" ]; then
@@ -16,6 +15,7 @@ if [ ! -f "$STATE_FILE" ]; then
 fi
 
 TID=$(grep -o '"terminal_id":"[^"]*"' "$STATE_FILE" 2>/dev/null | head -1 | cut -d'"' -f4)
+SESSION_DIR=$(grep -o '"session_dir":"[^"]*"' "$STATE_FILE" 2>/dev/null | head -1 | cut -d'"' -f4)
 if [ -z "$TID" ]; then
   exit 0
 fi
@@ -31,11 +31,23 @@ if [ -x "$SYNC_SCRIPT" ]; then
   "$SYNC_SCRIPT" push 2>/dev/null || true
 fi
 
-# Git pull to pick up our HTTP writes + others' changes
-if [ -d "$CLIENT_DIR/.git" ]; then
-  BRANCH=$(git -C "$CLIENT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+# Push pending changes and deactivate session
+if [ -n "$SESSION_DIR" ] && [ -d "$SESSION_DIR/.git" ]; then
+  # Push pending changes
+  BRANCH=$(git -C "$SESSION_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   [ "$BRANCH" = "HEAD" ] && BRANCH="main"
-  git -C "$CLIENT_DIR" pull --rebase origin "$BRANCH" 2>/dev/null || true
+  git -C "$SESSION_DIR" add -A 2>/dev/null || true
+  git -C "$SESSION_DIR" diff --cached --quiet 2>/dev/null || \
+    git -C "$SESSION_DIR" commit -m "[agent] session end" 2>/dev/null || true
+  git -C "$SESSION_DIR" push origin "$BRANCH" 2>/dev/null || true
+  # Deactivate session
+  SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+  _CAO_SCRIPT_DIR="$SCRIPT_DIR" _CAO_SESSION_DIR="$SESSION_DIR" python3 -c "
+import sys, os; sys.path.insert(0, os.environ['_CAO_SCRIPT_DIR'])
+from pathlib import Path
+from session_manager import deactivate_session
+deactivate_session(Path(os.environ['_CAO_SESSION_DIR']))
+" 2>/dev/null || true
 fi
 
 # Clean up state

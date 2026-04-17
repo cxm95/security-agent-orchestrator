@@ -25,9 +25,31 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CLIENT_DIR = Path.home() / ".cao-evolution-client"
 
+# Per-session directory override (set by session_manager at init time)
+_current_session_dir: Path | None = None
+
+
+def set_session_dir(path: Path) -> None:
+    """Set the per-session working directory for this process.
+
+    Called by CaoBridge.init_session() after session_manager.create_session().
+    All subsequent git operations will target this directory.
+    """
+    global _current_session_dir
+    _current_session_dir = path
+    logger.info("Session dir set to %s", path)
+
 
 def client_dir() -> Path:
-    """Return the agent-side clone directory."""
+    """Return the agent-side clone directory.
+
+    Resolution order:
+    1. _current_session_dir (set via set_session_dir — per-session isolation)
+    2. CAO_CLIENT_DIR env var (full override, backward compat)
+    3. DEFAULT_CLIENT_DIR (legacy single-instance fallback)
+    """
+    if _current_session_dir is not None:
+        return _current_session_dir
     return Path(os.environ.get("CAO_CLIENT_DIR", str(DEFAULT_CLIENT_DIR)))
 
 

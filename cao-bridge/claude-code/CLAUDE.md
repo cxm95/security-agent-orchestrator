@@ -3,10 +3,18 @@
 You are connected to a **CAO Hub** (CLI Agent Orchestrator) for collaborative evolution.
 The `cao-bridge` MCP server is configured and provides these tools:
 
+## Session Isolation
+
+Each agent instance runs in its own session directory under
+`~/.cao-evolution-client/sessions/<session_id>/`. Session init happens
+automatically at startup (via hooks or MCP bridge). Use `cao_session_info`
+to check your current session.
+
 ## Core Tools
 - `cao_register` — Register with the Hub (call once at session start)
 - `cao_poll` — Poll for pending tasks
 - `cao_report` — Report status and results
+- `cao_session_info` — Show current session metadata
 
 ## Evolution Tools
 - `cao_report_score` — Report evaluation score after completing a task
@@ -19,8 +27,8 @@ The `cao-bridge` MCP server is configured and provides these tools:
 
 Notes and skills are shared by writing files locally and pushing via git:
 
-1. Write a note: `~/.cao-evolution-client/notes/<name>.md` (with YAML frontmatter)
-2. Write a skill: `~/.cao-evolution-client/skills/<name>/SKILL.md`
+1. Write a note: `<session_dir>/notes/<name>.md` (with YAML frontmatter)
+2. Write a skill: `<session_dir>/skills/<name>/SKILL.md`
 3. Call `cao_push` to stage, commit, and push to the Hub
 
 ## Workflow
@@ -36,7 +44,7 @@ Notes and skills are shared by writing files locally and pushing via git:
    - Call `cao_push` to sync results to Hub
 7. After heartbeat actions (if any), continue your main task.
 8. Call `cao_search_knowledge` before complex tasks to leverage team insights.
-9. Write notes to `~/.cao-evolution-client/notes/` and call `cao_push` when you discover something useful.
+9. Write notes to `<session_dir>/notes/` and call `cao_push` when you discover something useful.
 
 ## Rules
 

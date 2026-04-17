@@ -20,6 +20,7 @@ Usage in opencode.json:
 import json
 import logging
 import os
+import atexit
 import sys
 
 from fastmcp import FastMCP
@@ -35,6 +36,16 @@ hub_url = os.environ.get("CAO_HUB_URL", "http://127.0.0.1:9889")
 agent_profile = os.environ.get("CAO_AGENT_PROFILE", "remote-opencode")
 
 bridge = CaoBridge(hub_url=hub_url, agent_profile=agent_profile)
+
+# Initialize per-session isolation (git clone into session directory)
+git_remote = os.environ.get("CAO_GIT_REMOTE", "")
+if git_remote:
+    try:
+        bridge.init_session(git_remote=git_remote)
+        atexit.register(bridge.close_session)
+        logger.info("Session initialized: %s", bridge.session_dir)
+    except Exception:
+        logger.warning("Session init failed, falling back to legacy mode", exc_info=True)
 
 # Recall mode: "full" = git clone + text grep; "selective" = BM25 recall + on-demand fetch
 RECALL_MODE = os.environ.get("CAO_RECALL_MODE", "full")
@@ -88,6 +99,8 @@ async def cao_create_task(
     description: str = "",
     grader_skill: str = "",
     tips: str = "",
+    group: str = "",
+    group_tags: str = "",
 ) -> str:
     """Create a task on the Hub for evolution tracking.
 
@@ -98,12 +111,16 @@ async def cao_create_task(
         description: What the task involves
         grader_skill: Evo-skill name for grading (e.g., "security-grader")
         tips: Comma-separated hints for agents
+        group: Task group for cross-task aggregation (e.g., "poc-experiment-1")
+        group_tags: Comma-separated group tags
     Returns JSON with task_id and created status.
     """
     tips_list = [t.strip() for t in tips.split(",") if t.strip()] if tips else []
+    tags_list = [t.strip() for t in group_tags.split(",") if t.strip()] if group_tags else []
     result = bridge.create_task(
         task_id=task_id, name=name or task_id, description=description,
-        grader_skill=grader_skill, tips=tips_list,
+        grader_skill=grader_skill, tips=tips_list, group=group,
+        group_tags=tags_list or None,
     )
     return json.dumps(result)
 
@@ -127,6 +144,8 @@ async def cao_report_score(
     score: float = 0.0,
     title: str = "",
     feedback: str = "",
+    agent_profile: str = "",
+    batch: str = "",
 ) -> str:
     """Report an evaluation score to the Hub.
 
@@ -135,8 +154,13 @@ async def cao_report_score(
         score: Numeric score (higher is better). Use 0 for crashes.
         title: Short description of this attempt
         feedback: Grader feedback text
+        agent_profile: Agent profile name (e.g., "remote-opencode")
+        batch: Batch identifier (e.g., "batch-1")
     """
-    result = bridge.report_score(task_id, score, title=title, feedback=feedback)
+    result = bridge.report_score(
+        task_id, score, title=title, feedback=feedback,
+        agent_profile=agent_profile, batch=batch,
+    )
     return json.dumps(result)
 
 
@@ -320,8 +344,8 @@ async def cao_push(message: str = "agent sync") -> str:
 async def cao_pull_skills(target_dir: str = "") -> str:
     """Pull shared skills from the evolution repo into a local directory.
 
-    After cao_sync, this copies skills from ~/.cao-evolution-client/skills/
-    into the agent's local skills directory for automatic loading.
+    After cao_sync, this copies skills from the session's skills/
+    directory into the agent's local skills directory for automatic loading.
 
     Args:
         target_dir: Local directory to write skills into.
@@ -338,6 +362,23 @@ async def cao_pull_skills(target_dir: str = "") -> str:
         return json.dumps({"ok": True, "synced": synced, "target": str(tdir)})
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
+
+
+@mcp.tool()
+async def cao_session_info() -> str:
+    """Return current session metadata (session_id, directory, status).
+
+    Useful for debugging multi-instance setups.
+    """
+    if bridge.session_dir:
+        try:
+            from session_manager import _read_meta
+            meta = _read_meta(bridge.session_dir)
+            meta["session_dir"] = str(bridge.session_dir)
+            return json.dumps(meta)
+        except Exception as e:
+            return json.dumps({"session_dir": str(bridge.session_dir), "error": str(e)})
+    return json.dumps({"session_dir": None, "message": "No session initialized"})
 
 
 def main():

@@ -249,3 +249,59 @@ class TestFullEvolutionCycle:
 
         assert lb_alpha["entries"][0]["score"] == pytest.approx(0.9)
         assert lb_beta["entries"][0]["score"] == pytest.approx(0.3)
+
+    def test_group_workflow(self, hub, patch_requests):
+        """Full group workflow: create grouped tasks, report with profiles, query summary."""
+        client, _ = hub
+
+        # Create two tasks in the same group
+        client.post("/evolution/tasks", json={
+            "task_id": "poc-cve-001", "name": "PoC CVE-001",
+            "group": "poc-exp-1", "group_tags": ["poc", "batch-1"],
+            "grader_skill": "grader-oh-poc",
+        })
+        client.post("/evolution/tasks", json={
+            "task_id": "poc-cve-002", "name": "PoC CVE-002",
+            "group": "poc-exp-1", "group_tags": ["poc", "batch-1"],
+            "grader_skill": "grader-oh-poc",
+        })
+
+        # Two agents with different profiles report scores
+        agent_oc = _make_bridge()
+        agent_oc.terminal_id = agent_oc.register()
+        agent_cc = _make_bridge()
+        agent_cc.terminal_id = agent_cc.register()
+
+        agent_oc.report_score("poc-cve-001", 50, title="opencode cve-001",
+                              agent_profile="remote-opencode", batch="batch-1")
+        agent_oc.report_score("poc-cve-002", 70, title="opencode cve-002",
+                              agent_profile="remote-opencode", batch="batch-1")
+        agent_cc.report_score("poc-cve-001", 90, title="claude cve-001",
+                              agent_profile="remote-claude-code", batch="batch-1")
+        agent_cc.report_score("poc-cve-002", 100, title="claude cve-002",
+                              agent_profile="remote-claude-code", batch="batch-1")
+
+        # List tasks filtered by group
+        tasks = client.get("/evolution/tasks", params={"group": "poc-exp-1"}).json()
+        assert len(tasks) == 2
+
+        # Group summary
+        summary = client.get("/evolution/groups/poc-exp-1/summary").json()
+        assert summary["group"] == "poc-exp-1"
+        assert summary["total_attempts"] == 4
+        profiles = summary["profiles"]
+        assert profiles["remote-opencode"]["avg_score"] == 60.0
+        assert profiles["remote-claude-code"]["avg_score"] == 95.0
+        assert "leaderboard" in summary
+        assert "formatted" in summary
+
+        # Leaderboard filtered by profile
+        lb = client.get("/evolution/poc-cve-001/leaderboard",
+                        params={"agent_profile": "remote-opencode"}).json()
+        assert all(e.get("agent_profile") == "remote-opencode" for e in lb["entries"])
+
+        # Attempts filtered by batch
+        attempts = client.get("/evolution/poc-cve-001/attempts",
+                              params={"batch": "batch-1"}).json()
+        assert len(attempts) == 2
+        assert all(a.get("batch") == "batch-1" for a in attempts)

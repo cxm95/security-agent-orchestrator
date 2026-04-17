@@ -173,6 +173,81 @@ class TestLeaderboardEndpoints:
         assert len(r.json()) >= 3
 
 
+# ── agent_profile / batch / group ──────────────────────────────────────
+
+class TestProfileBatchGroup:
+    def test_submit_score_with_profile_and_batch(self, client):
+        r = client.post("/evolution/test-scan/scores", json={
+            "agent_id": "agent-oc1",
+            "score": 0.65,
+            "title": "opencode attempt",
+            "agent_profile": "remote-opencode",
+            "batch": "batch-1",
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] in ("improved", "baseline", "regressed")
+
+    def test_attempts_include_profile_and_batch(self, client):
+        r = client.get("/evolution/test-scan/attempts", params={
+            "agent_profile": "remote-opencode",
+        })
+        assert r.status_code == 200
+        entries = r.json()
+        assert len(entries) >= 1
+        assert all(e.get("agent_profile") == "remote-opencode" for e in entries)
+
+    def test_attempts_filter_by_batch(self, client):
+        r = client.get("/evolution/test-scan/attempts", params={
+            "batch": "batch-1",
+        })
+        assert r.status_code == 200
+        entries = r.json()
+        assert all(e.get("batch") == "batch-1" for e in entries)
+
+    def test_create_task_with_group(self, client):
+        r = client.post("/evolution/tasks", json={
+            "task_id": "grouped-task-1",
+            "name": "Grouped Task 1",
+            "group": "poc-exp",
+            "group_tags": ["poc", "batch-1"],
+            "grader_skill": "grader-oh-poc",
+        })
+        assert r.status_code == 201
+
+    def test_list_tasks_filter_by_group(self, client):
+        client.post("/evolution/tasks", json={
+            "task_id": "grouped-task-2",
+            "group": "poc-exp",
+        })
+        r = client.get("/evolution/tasks", params={"group": "poc-exp"})
+        assert r.status_code == 200
+        ids = [t["task_id"] for t in r.json()]
+        assert "grouped-task-1" in ids
+        assert "grouped-task-2" in ids
+
+    def test_group_summary(self, client):
+        client.post("/evolution/grouped-task-1/scores", json={
+            "agent_id": "a1", "score": 80,
+            "agent_profile": "remote-opencode", "batch": "batch-1",
+        })
+        client.post("/evolution/grouped-task-2/scores", json={
+            "agent_id": "a2", "score": 90,
+            "agent_profile": "remote-claude-code", "batch": "batch-1",
+        })
+        r = client.get("/evolution/groups/poc-exp/summary")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["group"] == "poc-exp"
+        assert data["total_attempts"] >= 2
+        assert "remote-opencode" in data["profiles"]
+        assert "remote-claude-code" in data["profiles"]
+
+    def test_group_summary_not_found(self, client):
+        r = client.get("/evolution/groups/nonexistent/summary")
+        assert r.status_code == 404
+
+
 # ── Knowledge: notes ─────────────────────────────────────────────────────
 
 class TestNoteEndpoints:

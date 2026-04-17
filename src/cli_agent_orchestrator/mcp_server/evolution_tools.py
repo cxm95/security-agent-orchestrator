@@ -35,6 +35,8 @@ def register_evolution_tools(mcp: FastMCP) -> None:
         score: Optional[float] = Field(default=None, description="Evaluation score (None if crashed)"),
         title: str = Field(default="", description="Short description of the attempt"),
         feedback: str = Field(default="", description="Grader feedback text"),
+        agent_profile: str = Field(default="", description="Agent profile name, e.g. 'remote-opencode'"),
+        batch: str = Field(default="", description="Batch identifier, e.g. 'batch-1'"),
     ) -> Dict[str, Any]:
         """Report a task evaluation score to the Hub.
 
@@ -42,9 +44,14 @@ def register_evolution_tools(mcp: FastMCP) -> None:
         leaderboard position, and evals since last improvement.
         """
         try:
+            body: Dict[str, Any] = {"agent_id": agent_id, "score": score, "title": title, "feedback": feedback}
+            if agent_profile:
+                body["agent_profile"] = agent_profile
+            if batch:
+                body["batch"] = batch
             r = _http.post(
                 f"{API_BASE_URL}/evolution/{task_id}/scores",
-                json={"agent_id": agent_id, "score": score, "title": title, "feedback": feedback},
+                json=body,
                 timeout=10,
             )
             r.raise_for_status()
@@ -209,23 +216,32 @@ def register_evolution_tools(mcp: FastMCP) -> None:
         description: str = Field(default="", description="Task description"),
         grader_skill: str = Field(default="", description="Name of evo-skill used for grading, e.g. 'security-grader'"),
         tips: str = Field(default="", description="Comma-separated tips for agents"),
+        group: str = Field(default="", description="Task group for cross-task aggregation, e.g. 'poc-experiment-1'"),
+        group_tags: str = Field(default="", description="Comma-separated group tags"),
         force: bool = Field(default=False, description="Overwrite existing task (agent-side wins)"),
     ) -> Dict[str, Any]:
         """Create or update a task on the Hub. Remote agents can register tasks.
 
         grader_skill names an evo-skill that the agent loads to grade its own output.
+        group enables cross-task aggregation (e.g. all tasks in an experiment).
         Use force=true to update an existing task (agent-side takes precedence).
         """
         try:
             tips_list = [t.strip() for t in tips.split(",") if t.strip()] if tips else []
+            tags_list = [t.strip() for t in group_tags.split(",") if t.strip()] if group_tags else []
+            body: Dict[str, Any] = {
+                "task_id": task_id, "name": name or task_id,
+                "description": description, "grader_skill": grader_skill,
+                "tips": tips_list, "created_by": "mcp-agent",
+                "force": force,
+            }
+            if group:
+                body["group"] = group
+            if tags_list:
+                body["group_tags"] = tags_list
             r = _http.post(
                 f"{API_BASE_URL}/evolution/tasks",
-                json={
-                    "task_id": task_id, "name": name or task_id,
-                    "description": description, "grader_skill": grader_skill,
-                    "tips": tips_list, "created_by": "mcp-agent",
-                    "force": force,
-                },
+                json=body,
                 timeout=10,
             )
             r.raise_for_status()

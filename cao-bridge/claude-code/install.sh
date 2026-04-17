@@ -57,8 +57,9 @@ echo "  Created .claude/commands/evolve.md"
 
 # 5. Install hooks
 START_HOOK="$SCRIPT_DIR/hooks/cao-session-start.sh"
-STOP_HOOK="$SCRIPT_DIR/hooks/cao-session-stop.sh"
-chmod +x "$START_HOOK" "$STOP_HOOK"
+GRADER_HOOK="$SCRIPT_DIR/hooks/cao-stop-grader.py"
+END_HOOK="$SCRIPT_DIR/hooks/cao-session-stop.sh"
+chmod +x "$START_HOOK" "$END_HOOK"
 
 # Create or merge settings.local.json with hook config
 SETTINGS="$TARGET/.claude/settings.local.json"
@@ -71,7 +72,11 @@ HOOKS_JSON=$(cat <<EOF
     }],
     "Stop": [{
       "matcher": "",
-      "hooks": [{"type": "command", "command": "$STOP_HOOK"}]
+      "hooks": [{"type": "command", "command": "python3 $GRADER_HOOK"}]
+    }],
+    "SessionEnd": [{
+      "matcher": "",
+      "hooks": [{"type": "command", "command": "$END_HOOK"}]
     }]
   }
 }
@@ -91,4 +96,4 @@ echo ""
 echo "Done! Start Claude Code in $TARGET to use CAO Bridge."
 echo "  MCP tools: cao_register, cao_poll, cao_report, cao_report_score, ..."
 echo "  Command:   /evolve — trigger evolution cycle"
-echo "  Hooks:     auto-register on start, auto-report on stop"
+echo "  Hooks:     SessionStart (register), Stop (auto-grading), SessionEnd (cleanup)"

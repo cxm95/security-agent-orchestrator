@@ -1,10 +1,12 @@
 """CAO Remote Bridge — shared HTTP client for all bridge variants.
 
 This module talks to the CAO Hub server's /remotes/ endpoints and
-synchronises shared knowledge via git (agent-side clone at ~/.cao-evolution-client/).
+synchronises shared knowledge via git (per-session clone under
+~/.cao-evolution-client/sessions/<session_id>/).
 """
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,8 +20,9 @@ logger = logging.getLogger(__name__)
 class CaoBridge:
     """HTTP client that registers with CAO Hub and exchanges input/output.
 
-    Also manages a local git clone (``~/.cao-evolution-client/``) for
-    bi-directional knowledge sync with the Hub's evolution repo.
+    Also manages a local git clone (per-session directory under
+    ``~/.cao-evolution-client/sessions/<session_id>/``) for bi-directional
+    knowledge sync with the Hub's evolution repo.
     """
 
     def __init__(self, hub_url: str = "http://127.0.0.1:9889",
@@ -29,8 +32,61 @@ class CaoBridge:
         self.agent_profile = agent_profile
         self.terminal_id: Optional[str] = None
         self._git_remote = git_remote  # explicit override; env fallback in git_sync
+        self._session_dir: Optional[Path] = None
 
     _TIMEOUT = 30  # seconds
+
+    # ── Session lifecycle ────────────────────────────────────────────────
+
+    def init_session(self, git_remote: str = "") -> Path:
+        """Create a new per-instance session directory with git clone.
+
+        Sets up session isolation so this bridge instance operates on its
+        own directory under ``~/.cao-evolution-client/sessions/<session_id>/``.
+        Must be called before any git operations.
+
+        Returns the session directory path.
+        """
+        from session_manager import create_session
+        from git_sync import set_session_dir
+
+        url = git_remote or self._git_remote
+        if not url:
+            url = os.environ.get("CAO_GIT_REMOTE", "")
+        if not url:
+            raise RuntimeError(
+                "No git remote configured. Set CAO_GIT_REMOTE env var "
+                "or pass git_remote to init_session()."
+            )
+
+        self._session_dir = create_session(
+            git_remote=url,
+            agent_profile=self.agent_profile,
+        )
+        set_session_dir(self._session_dir)
+        return self._session_dir
+
+    def close_session(self) -> None:
+        """Push pending changes and mark session as inactive.
+
+        Called on normal agent exit. The session directory is kept on disk
+        (marked inactive) for later cleanup by ``cao-session-mgr cleanup``.
+        """
+        if not self._session_dir:
+            return
+        from session_manager import deactivate_session, touch_session
+        from git_sync import push
+
+        try:
+            push(self._session_dir)
+        except Exception:
+            logger.warning("Failed to push on session close", exc_info=True)
+        deactivate_session(self._session_dir)
+
+    @property
+    def session_dir(self) -> Optional[Path]:
+        """The current session directory, or None if not initialized."""
+        return self._session_dir
 
     def register(self) -> str:
         """Register with Hub, returns terminal_id."""
@@ -41,6 +97,12 @@ class CaoBridge:
         data = resp.json()
         self.terminal_id = data["terminal_id"]
         logger.info(f"Registered with Hub: terminal_id={self.terminal_id}")
+        if self._session_dir:
+            try:
+                from session_manager import set_terminal_id
+                set_terminal_id(self._session_dir, self.terminal_id)
+            except Exception:
+                pass
         return self.terminal_id
 
     def poll(self) -> Optional[str]:
@@ -86,13 +148,19 @@ class CaoBridge:
     # ── Evolution endpoints ──────────────────────────────────────────
 
     def report_score(self, task_id: str, score: Optional[float],
-                     title: str = "", feedback: str = "") -> dict:
+                     title: str = "", feedback: str = "",
+                     agent_profile: str = "", batch: str = "") -> dict:
         """Report an evaluation score to the Hub."""
         agent_id = self.terminal_id or "anonymous"
+        body: dict = {"agent_id": agent_id, "score": score,
+                       "title": title, "feedback": feedback}
+        if agent_profile:
+            body["agent_profile"] = agent_profile
+        if batch:
+            body["batch"] = batch
         resp = requests.post(
             f"{self.hub_url}/evolution/{task_id}/scores",
-            json={"agent_id": agent_id, "score": score,
-                   "title": title, "feedback": feedback},
+            json=body,
             timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
@@ -146,17 +214,23 @@ class CaoBridge:
 
     def create_task(self, task_id: str, name: str = "", description: str = "",
                     grader_skill: str = "",
-                    tips: list | None = None, force: bool = False) -> dict:
+                    tips: list | None = None, group: str = "",
+                    group_tags: list | None = None, force: bool = False) -> dict:
         """Create or update a task on the Hub (agent-side registration)."""
+        body: dict = {
+            "task_id": task_id, "name": name or task_id,
+            "description": description, "grader_skill": grader_skill,
+            "tips": tips or [],
+            "created_by": self.terminal_id or "remote-agent",
+            "force": force,
+        }
+        if group:
+            body["group"] = group
+        if group_tags:
+            body["group_tags"] = group_tags
         resp = requests.post(
             f"{self.hub_url}/evolution/tasks",
-            json={
-                "task_id": task_id, "name": name or task_id,
-                "description": description, "grader_skill": grader_skill,
-                "tips": tips or [],
-                "created_by": self.terminal_id or "remote-agent",
-                "force": force,
-            },
+            json=body,
             timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
@@ -359,10 +433,15 @@ class CaoBridge:
     # ── Git sync (agent-side clone at ~/.cao-evolution-client/) ────────
 
     def sync_repo(self, remote_url: str = "") -> Path:
-        """Clone or pull the Hub's evolution repo to ~/.cao-evolution-client/.
+        """Clone or pull the Hub's evolution repo.
 
-        Call at session start.  Returns the local clone path.
+        If a session is active, operates on the session directory.
+        Otherwise falls back to legacy init_client_repo behavior.
         """
+        if self._session_dir:
+            from git_sync import pull
+            pull(self._session_dir)
+            return self._session_dir
         from git_sync import init_client_repo
         url = remote_url or self._git_remote
         return init_client_repo(url or None)
