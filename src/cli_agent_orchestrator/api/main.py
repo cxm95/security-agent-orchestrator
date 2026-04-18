@@ -367,6 +367,55 @@ async def list_terminals_in_session(session_name: str) -> List[Dict]:
         )
 
 
+@app.get("/terminals")
+async def list_all_terminals_endpoint(
+    provider: Optional[str] = Query(
+        default=None, description="Optional provider filter (e.g. 'remote', 'claude_code')"
+    ),
+) -> List[Dict]:
+    """List all terminals across every session — tmux-backed or remote.
+
+    Unlike ``/sessions``, this endpoint is independent of tmux so remote
+    agents that registered via ``/remotes/register`` are always visible here.
+    """
+    try:
+        from cli_agent_orchestrator.clients.database import (
+            list_all_terminals as db_list_all_terminals,
+        )
+
+        terminals = db_list_all_terminals()
+        if provider:
+            terminals = [t for t in terminals if t["provider"] == provider]
+
+        result = []
+        for t in terminals:
+            live_status = None
+            try:
+                prov = provider_manager.get_provider(t["id"])
+                if prov is not None:
+                    live_status = prov.get_status().value
+            except Exception:
+                live_status = None
+
+            result.append(
+                {
+                    "id": t["id"],
+                    "name": t["tmux_window"],
+                    "provider": t["provider"],
+                    "session_name": t["tmux_session"],
+                    "agent_profile": t["agent_profile"],
+                    "status": live_status,
+                    "last_active": t["last_active"].isoformat() if t.get("last_active") else None,
+                }
+            )
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list terminals: {str(e)}",
+        )
+
+
 @app.get("/terminals/{terminal_id}", response_model=Terminal)
 async def get_terminal(terminal_id: TerminalId) -> Terminal:
     try:

@@ -63,6 +63,28 @@ def hub_post(path: str, body: dict):
         return None
 
 
+def poll_hub_for_task(terminal_id: str) -> str | None:
+    """Poll Hub for a pending task for this terminal.
+
+    Returns the task prompt string when Hub has queued input, or ``None``
+    when the queue is empty / terminal is unknown / Hub unreachable.
+    The Hub consumes the message on read, so we must ``block()`` immediately
+    with the returned text to avoid dropping it.
+    """
+    if not terminal_id:
+        return None
+    resp = hub_get(f"/remotes/{terminal_id}/poll")
+    if not resp:
+        return None
+    if not resp.get("has_input"):
+        return None
+    msg = resp.get("input")
+    if not msg:
+        return None
+    dbg(f"poll returned task len={len(msg)} for {terminal_id}")
+    return msg
+
+
 def read_state(session_id: str) -> dict:
     p = GRADER_STATE_DIR / f"{session_id}.json"
     if p.exists():
@@ -143,6 +165,25 @@ def allow():
     sys.exit(0)
 
 
+def poll_or_allow(terminal_id: str, hook_input: dict):
+    """Poll Hub; if a task is pending, inject it as the next turn.
+
+    We intentionally do **not** early-return on ``stop_hook_active``:
+    the whole point of this hook is to drain the Hub's work queue by
+    chaining block-decisions (the heartbeat flow in this same file
+    already relies on multi-block continuations).  Hub ``consume_pending_input``
+    pops the queue on read, so repeat polls never see the same task
+    twice — an infinite loop would require the Hub to actively
+    re-queue work each cycle, which is not how it works.
+    """
+    _ = hook_input  # reserved for future per-chain limits
+    task = poll_hub_for_task(terminal_id)
+    if task:
+        block(task)
+        return
+    allow()
+
+
 def main():
     hook_input = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
     session_id = hook_input.get("session_id", "unknown")
@@ -188,12 +229,12 @@ def main():
             else:
                 state.update(phase="idle", task_id="", heartbeats=[])
                 write_state(session_id, state)
-                allow()
+                poll_or_allow(terminal_id, hook_input)
         else:
             dbg("grading phase but no CAO_SCORE found, allowing stop")
             state.update(phase="idle", task_id="", heartbeats=[])
             write_state(session_id, state)
-            allow()
+            poll_or_allow(terminal_id, hook_input)
         return
 
     # ── Phase: HEARTBEAT — inject next heartbeat or go idle ──────────
@@ -207,7 +248,7 @@ def main():
         else:
             state.update(phase="idle", task_id="", heartbeats=[])
             write_state(session_id, state)
-            allow()
+            poll_or_allow(terminal_id, hook_input)
         return
 
     # ── Phase: IDLE — detect task completion, inject grader ──────────
@@ -221,7 +262,8 @@ def main():
             dbg(f"detected task_id from transcript: {task_id}")
 
     if not task_id:
-        allow()
+        # No task in-flight — this is exactly the moment to pick up queued work.
+        poll_or_allow(terminal_id, hook_input)
         return
 
     # Check if agent self-graded (CAO_SCORE in output without us injecting grader)
@@ -237,14 +279,16 @@ def main():
         })
         state.update(phase="idle", task_id="", heartbeats=[])
         write_state(session_id, state)
-        allow()
+        poll_or_allow(terminal_id, hook_input)
         return
 
     # Check Hub: has the task been scored already?
     task_info = hub_get(f"/evolution/{task_id}")
     if task_info and task_info.get("attempt_count", 0) > 0:
         dbg(f"task {task_id} already has scores, skipping grader")
-        allow()
+        state.update(phase="idle", task_id="", heartbeats=[])
+        write_state(session_id, state)
+        poll_or_allow(terminal_id, hook_input)
         return
 
     # Check if the agent seems to have completed the task
@@ -267,6 +311,8 @@ def main():
                 is_completed = True
 
     if not is_completed:
+        # Task still in flight — don't poll for new work, it would
+        # interrupt the current task with a different one.
         allow()
         return
 

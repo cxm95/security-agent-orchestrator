@@ -33,8 +33,13 @@ Notes and skills are shared by writing files locally and pushing via git:
 
 ## Workflow
 
-1. At session start, call `cao_register` to get your terminal_id.
-2. Call `cao_poll` periodically to check for assigned tasks.
+1. At session start, call `cao_register` to get your terminal_id (a
+   SessionStart hook has already registered you, but calling it again is
+   idempotent when safe).
+2. **Immediately call `cao_poll`** as your first action — do not wait
+   for a user message. The Stop hook will continue polling on every
+   turn boundary, but the first poll must come from you to kick things
+   off.
 3. When you receive a task, call `cao_report` with `status="processing"`.
 4. Execute the task, then call `cao_report` with `status="completed"` and your result.
 5. Call `cao_report_score` with your evaluation of the completed work.

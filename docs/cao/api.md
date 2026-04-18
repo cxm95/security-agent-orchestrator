@@ -31,12 +31,22 @@ Create a new session with one terminal.
 **Response:** Terminal object (201 Created)
 
 ### GET /sessions
-List all sessions.
+List all sessions — includes tmux-backed sessions and remote-only (DB-backed) sessions.
+
+Each entry carries a `kind` field:
+- `"local"` — a real tmux session exists for this name
+- `"remote"` — no tmux session; all terminals under this name are remote agents registered via `/remotes/register`
 
 **Response:** Array of session objects
+```json
+[
+  {"id": "cao-foo", "name": "cao-foo", "status": "detached", "kind": "local"},
+  {"id": "remote-2025-04-17", "name": "remote-2025-04-17", "status": "detached", "kind": "remote"}
+]
+```
 
 ### GET /sessions/{session_name}
-Get details of a specific session.
+Get details of a specific session. Works for both tmux-backed and remote-only sessions.
 
 **Response:** Session object with terminals list
 
@@ -70,6 +80,29 @@ Create an additional terminal in an existing session.
 List all terminals in a session.
 
 **Response:** Array of terminal objects
+
+### GET /terminals
+List all terminals across every session, independent of tmux. Remote agents
+registered via `/remotes/register` are always visible here even when no tmux
+session exists.
+
+**Parameters:**
+- `provider` (string, optional): Filter by provider name (e.g. `remote`, `claude_code`, `opencode`).
+
+**Response:** Array of terminal objects
+```json
+[
+  {
+    "id": "f39efd4c",
+    "name": "remote-claude-code-xxxxxxxx",
+    "provider": "remote",
+    "session_name": "remote-2025-04-17",
+    "agent_profile": "remote-claude-code",
+    "status": "idle",
+    "last_active": "2026-04-17T10:12:34"
+  }
+]
+```
 
 ### GET /terminals/{terminal_id}
 Get terminal details.
