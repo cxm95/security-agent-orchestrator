@@ -3,16 +3,27 @@
 You are connected to a **CAO Hub** (CLI Agent Orchestrator) for collaborative evolution.
 The `cao-bridge` MCP server is configured and provides these tools:
 
-## Session Isolation
+## Registration & Polling
 
-Each agent instance runs in its own session directory under
-`~/.cao-evolution-client/sessions/<session_id>/`. Session init happens
-automatically at startup (via hooks or MCP bridge). Use `cao_session_info`
-to check your current session.
+There are two modes depending on your setup:
+
+**Mode A — Hooks installed (default for experiments):**
+Registration and polling are handled automatically by SessionStart/Stop hooks.
+You do NOT need to call `cao_register` or `cao_poll` — the hooks handle it.
+To verify: check if the SessionStart hook output mentions "[CAO] Registered as ...".
+
+**Mode B — MCP only (no hooks):**
+If no SessionStart hook is configured, you must register and poll manually:
+1. Call `cao_register` once at session start to get your terminal_id.
+2. Call `cao_poll` to check for queued tasks.
+
+**How to tell which mode you're in:**
+- If you see "[CAO] Registered as ..." in your session context → Mode A (do NOT call cao_register)
+- If you don't see that message → Mode B (call cao_register, then cao_poll)
 
 ## Core Tools
-- `cao_register` — Register with the Hub (call once at session start)
-- `cao_poll` — Poll for pending tasks
+- `cao_register` — Register with the Hub (Mode B only)
+- `cao_poll` — Poll for pending tasks (Mode B only)
 - `cao_report` — Report status and results
 - `cao_session_info` — Show current session metadata
 
@@ -33,18 +44,17 @@ Notes and skills are shared by writing files locally and pushing via git:
 
 ## Workflow
 
-1. At session start, call `cao_register` to get your terminal_id (a
-   SessionStart hook has already registered you, but calling it again is
-   idempotent when safe).
-2. **Immediately call `cao_poll`** as your first action — do not wait
-   for a user message. The Stop hook will continue polling on every
-   turn boundary, but the first poll must come from you to kick things
-   off.
-3. When you receive a task, call `cao_report` with `status="processing"`.
-4. Execute the task, then call `cao_report` with `status="completed"` and your result.
-5. Call `cao_report_score` with your evaluation of the completed work.
+1. **Registration**: Check if "[CAO] Registered as ..." appears in context.
+   - Yes → hooks are active, skip to step 2.
+   - No → call `cao_register`, then `cao_poll`.
+2. When a task arrives (via hook injection or cao_poll), call `cao_report` with `status="processing"`.
+3. Execute the task.
+4. Call `cao_report` with `status="completed"` and your result.
+5. **Scoring**:
+   - **Mode A (hooks active):** Do NOT call `cao_report_score` yourself. The Stop hook will automatically inject a grader skill prompt. Follow the grader instructions and output `CAO_SCORE=<0-100>`. The hook parses this and reports the score.
+   - **Mode B (MCP only):** Call `cao_report_score` with your evaluation of the completed work.
 6. **Check the response for `heartbeat_prompts`**. If present, execute each one:
-   - Each prompt tells you to load a specific evolution skill (from `evo-skills/`)
+   - Each prompt tells you to load a specific evolution skill (from `~/.claude/skills/`)
    - Execute the skill following its SKILL.md instructions
    - Call `cao_push` to sync results to Hub
 7. After heartbeat actions (if any), continue your main task.
@@ -53,7 +63,9 @@ Notes and skills are shared by writing files locally and pushing via git:
 
 ## Rules
 
-- Always register before polling.
+- Do NOT call `cao_register` if you see "[CAO] Registered as ..." in context (hooks handle it).
+- Do NOT call `cao_poll` if hooks are active (Stop hook handles polling).
+- Do NOT call `cao_report_score` if hooks are active — the Stop hook injects the grader automatically.
 - Always report back after completing or failing a task.
 - Search knowledge before starting complex tasks.
 - Share notes via local git + `cao_push` when you learn something that could help others.

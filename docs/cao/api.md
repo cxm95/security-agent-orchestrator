@@ -196,6 +196,96 @@ Delete a terminal.
 
 ---
 
+## Remote Agents (DB-backed virtual terminals)
+
+Remote agents run outside of tmux (e.g. in a Claude Code / OpenCode plugin)
+and exchange state with the Hub over HTTP. State is persisted to the
+`remote_state` table so the pair survives a Hub restart.
+
+### POST /remotes/register
+Register a new remote agent. Idempotent per call (always returns a fresh
+`terminal_id`).
+
+**Body (JSON):**
+- `agent_profile` (string, required)
+- `session_name` (string, optional): Reuse an existing remote session;
+  a new one is generated if omitted.
+
+**Response (201 Created):**
+```json
+{ "terminal_id": "a1b2c3d4", "session_name": "cao-xxxxxxxx" }
+```
+
+### POST /remotes/{terminal_id}/reattach
+Called by an agent at cold-start when it already has a cached
+`terminal_id`. Lets the agent resume with the Hub after either side
+restarts, without losing queued work or accumulated output.
+
+**Behavior:**
+- Returns **404** if the id is unknown (caller should fall back to `/register`).
+- Returns **400** if the terminal is not a remote terminal.
+- On success: touches `last_seen_at` and, if a stale `processing`/`error`
+  status is left over from a crashed session (with no `pending_input`
+  queued), flips it back to `idle` so inbox delivery isn't blocked.
+
+**Response (200 OK):**
+```json
+{
+  "ok": true,
+  "terminal_id": "a1b2c3d4",
+  "session_name": "cao-xxxxxxxx",
+  "agent_profile": "remote-claude-code",
+  "status": "idle",
+  "has_pending_input": false,
+  "pending_inbox_count": 0
+}
+```
+
+### GET /remotes/{terminal_id}/poll
+Agent polls for the next pending input. Consumes the queue on read.
+
+**Response:**
+```json
+{ "has_input": true, "input": "the task prompt" }
+```
+When the queue is empty: `{ "has_input": false, "input": null }`.
+An empty poll still counts as a heartbeat and updates `last_seen_at`.
+
+Before consuming, the Hub also flushes any pending inbox messages into
+the remote's virtual queue, so a single `/poll` can deliver either a
+direct input or a queued inbox message (direct input wins).
+
+### POST /remotes/{terminal_id}/report
+Agent reports status and/or output after completing (or while running)
+a task.
+
+**Body (JSON):**
+- `status` (string, optional): `idle` / `processing` / `completed` / `error` /
+  `waiting_user_answer`. Unknown values are stored as `error`.
+- `output` (string, optional): Output to record.
+- `append` (bool, optional, default `false`): When `true`, appends to
+  `full_output`; when `false`, replaces it.
+
+**Response:** `{ "success": true }`
+
+**Note:** `full_output` is unbounded in memory but the persisted copy is
+trimmed to the trailing 128 KB so the DB can't grow unboundedly during a
+long-running session.
+
+### GET /remotes/{terminal_id}/status
+Lightweight status check (no side effects).
+
+**Response:**
+```json
+{
+  "terminal_id": "a1b2c3d4",
+  "status": "processing",
+  "has_pending_input": false
+}
+```
+
+---
+
 ## Inbox (Terminal-to-Terminal Messaging)
 
 ### POST /terminals/{receiver_id}/inbox/messages

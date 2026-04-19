@@ -15,7 +15,7 @@
  *   CAO_TERMINAL_ID      — Pre-assigned terminal ID (skip auto-register)
  *   CAO_POLL_INTERVAL    — Polling interval in ms (default: 5000)
  *   CAO_DEBUG            — "1" to enable file-based debug logging
- *   CAO_HEARTBEAT_ENABLED — "1" to auto-inject heartbeat prompts (default: "0")
+ *   CAO_HEARTBEAT_ENABLED — "0" to disable heartbeat injection (default: "1")
  *   CAO_FEEDBACK_ENABLED  — "1" to auto-fetch human feedback on idle (default: "0")
  */
 
@@ -29,7 +29,7 @@ export default (async ({ client }) => {
   const PROFILE = process.env.CAO_AGENT_PROFILE || "remote-opencode"
   const POLL_MS = parseInt(process.env.CAO_POLL_INTERVAL || "5000", 10)
   const DEBUG = process.env.CAO_DEBUG === "1"
-  const HEARTBEAT = process.env.CAO_HEARTBEAT_ENABLED === "1"
+  const HEARTBEAT = (process.env.CAO_HEARTBEAT_ENABLED ?? "1") !== "0"
   const FEEDBACK = process.env.CAO_FEEDBACK_ENABLED === "1"
 
   let terminalId: string | null = process.env.CAO_TERMINAL_ID || null
@@ -288,9 +288,11 @@ export default (async ({ client }) => {
         awaitingResult = true
         await report("processing")
         const task = String(data.input || "")
-        // Extract task_id from metadata if available
-        currentTaskId = data.task_id || null
-        dbg("injecting: " + task.substring(0, 80))
+        // Extract task_id from [CAO Task ID: xxx] in the prompt
+        const tidMatch = task.match(/\[CAO Task ID:\s*([^\]]+)\]/)
+        currentTaskId = data.task_id || (tidMatch ? tidMatch[1].trim() : null)
+        dbg("injecting task=" + (currentTaskId || "?") + ": " + task.substring(0, 80))
+        if (terminalId) writeCachedTerminalId(terminalId)
         await client.tui.appendPrompt({ body: { text: task } })
         await client.tui.submitPrompt()
       } else {
@@ -302,7 +304,67 @@ export default (async ({ client }) => {
     }
   }
 
-  // Register or use pre-assigned terminal ID
+  // ── Stable state file at $CAO_CLIENT_BASE_DIR/state/opencode-<profile>.json
+  //     Lets OpenCode reattach to its Hub terminal across restarts.
+  const STATE_BASE = process.env.CAO_CLIENT_BASE_DIR || (process.env.HOME + "/.cao-evolution-client")
+  const STATE_DIR = STATE_BASE + "/state"
+  const STATE_FILE = STATE_DIR + "/opencode-" + PROFILE + ".json"
+
+  function readCachedTerminalId(): string {
+    try {
+      const { existsSync, readFileSync } = require("fs")
+      if (!existsSync(STATE_FILE)) return ""
+      const data = JSON.parse(readFileSync(STATE_FILE, "utf-8"))
+      // Restore in-flight task state from previous session
+      if (data.awaiting_task_id && !currentTaskId) {
+        currentTaskId = data.awaiting_task_id
+        awaitingResult = true
+        dbg("restored in-flight task: " + currentTaskId)
+      }
+      return String(data.terminal_id || "")
+    } catch { return "" }
+  }
+
+  function writeCachedTerminalId(tid: string) {
+    try {
+      const { existsSync, mkdirSync, writeFileSync } = require("fs")
+      if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true })
+      writeFileSync(STATE_FILE, JSON.stringify({
+        terminal_id: tid,
+        session_dir: CLIENT_DIR,
+        awaiting_task_id: currentTaskId || "",
+      }))
+    } catch (e: any) {
+      dbg("state write failed: " + (e.message || e))
+    }
+  }
+
+  // Reattach-first: cold start of OpenCode should try to resume the
+  // Hub-side terminal that previous runs created before falling back to
+  // register (which would strand any queued tasks under a dead id).
+  if (!terminalId) {
+    const cached = readCachedTerminalId()
+    if (cached) {
+      try {
+        const r = await fetch(HUB + "/remotes/" + cached + "/reattach", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        })
+        if (r.ok) {
+          const data = await r.json() as any
+          terminalId = data.terminal_id || cached
+          dbg("reattached: " + terminalId)
+        } else if (r.status === 404) {
+          dbg("reattach 404, cached id " + cached + " is stale")
+        } else {
+          dbg("reattach http " + r.status)
+        }
+      } catch (e: any) {
+        dbg("reattach failed: " + (e.message || e))
+      }
+    }
+  }
+
   if (!terminalId) {
     try {
       const data = await hub("/remotes/register", {
@@ -314,6 +376,10 @@ export default (async ({ client }) => {
     } catch {
       dbg("register failed")
     }
+  }
+
+  if (terminalId) {
+    writeCachedTerminalId(terminalId)
   }
 
   // Start periodic polling immediately (no event dependency)
@@ -378,6 +444,7 @@ export default (async ({ client }) => {
           awaitingResult = false
           lastOutput = ""
           currentTaskId = null
+          if (terminalId) writeCachedTerminalId(terminalId)
 
           gitPush("grader: score submitted")
           if (gitSync()) pullSkillsFromClone()
@@ -401,10 +468,11 @@ export default (async ({ client }) => {
               // Inject grader skill prompt — agent will evaluate its own output
               dbg("injecting grader skill: " + graderSkill)
               pendingGraderTaskId = currentTaskId
+              const skillPath = (process.env.HOME || "") + "/.config/opencode/skills/" + graderSkill + "/SKILL.md"
               const graderPrompt =
                 `You just completed a task. Now grade your own output using the grader skill.\n\n` +
                 `## Instructions\n` +
-                `Load and follow evo-skills/${graderSkill}/SKILL.md to evaluate the output below.\n\n` +
+                `Read and follow ${skillPath} to evaluate the output below.\n\n` +
                 `## Task ID\n${currentTaskId}\n\n` +
                 `## Your Output to Grade\n` +
                 `${lastOutput.substring(0, 3000)}\n\n` +
@@ -438,6 +506,7 @@ export default (async ({ client }) => {
         awaitingResult = false
         lastOutput = ""
         currentTaskId = null
+        if (terminalId) writeCachedTerminalId(terminalId)
 
         // Push local changes (notes, skills) then pull latest
         gitPush("task completed")

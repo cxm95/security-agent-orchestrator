@@ -15,6 +15,15 @@ from cli_agent_orchestrator.models.terminal import TerminalStatus
 
 class TestRemoteProvider:
     def setup_method(self):
+        # RemoteProvider now mirrors state to the ``remote_state`` SQLite
+        # table, so we must wipe any row left by a previous test under the
+        # same terminal_id before constructing the provider — otherwise
+        # __init__ would hydrate stale ERROR / PROCESSING state.
+        try:
+            from cli_agent_orchestrator.clients.database import delete_remote_state
+            delete_remote_state("test-001")
+        except Exception:
+            pass
         self.provider = RemoteProvider("test-001", "session", "window", "profile")
 
     def test_initial_state(self):

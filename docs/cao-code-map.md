@@ -306,8 +306,32 @@ terminals                        inbox                         flows
 │ last_active          │        │ created_at           │      │ script             │
 └──────────────────────┘        └─────────────────────┘      │ last_run / next_run│
                                                                │ enabled            │
-                                                               └────────────────────┘
+remote_state (断点续传用)                                      └────────────────────┘
+┌──────────────────────┐
+│ terminal_id (PK)     │    RemoteProvider 内存状态在每次变更
+│ status               │    时镜像到本表；Hub 重启后由
+│ pending_input        │    RecoveryService 于 lifespan startup
+│ last_output          │    阶段 rehydrate 成 Provider 实例，
+│ full_output (clipped)│    full_output 尾部被裁剪到 128KB。
+│ last_seen_at         │
+│ updated_at           │
+└──────────────────────┘
 ```
+
+### 崩溃恢复 / Reattach 流程
+
+1. Hub 启动: `lifespan` → `RecoveryService.recover_all()` 遍历 `terminals`：
+   - local（tmux）终端: `tmux has-session` 存活则保留，否则标记 stale 并清理
+   - remote 终端: 为每行在 `ProviderManager` 重建 `RemoteProvider`，
+     构造函数内 `_hydrate_from_db()` 从 `remote_state` 加载状态
+2. Agent 冷启动 (cao-bridge / plugin / hook):
+   - 若本地缓存有 `terminal_id` → `POST /remotes/{id}/reattach`
+     - 404: 缓存失效 → fallback 到 `POST /remotes/register`
+     - 200: 返回 `status` / `has_pending_input` / `pending_inbox_count`，
+       同时调用 `provider.reset_for_reattach()` 把遗留的
+       `processing`/`error` 重置为 `idle`，避免 inbox 投递被阻塞
+3. 之后正常 `poll` / `report` 循环，`pending_input` 和 `full_output` 从
+   崩溃前保留。
 
 ---
 
@@ -335,8 +359,10 @@ terminals                        inbox                         flows
 | WS | `/terminals/{id}/ws` | WebSocket 实时终端 |
 | CRUD | `/flows/*` | Flow 定时任务管理 |
 | POST | `/remotes/register` | 远程 Agent 注册 |
+| POST | `/remotes/{id}/reattach` | 冷启动复用已注册的 terminal_id（断点续传） |
 | GET | `/remotes/{id}/poll` | 轮询待执行命令 |
 | POST | `/remotes/{id}/report` | 上报执行结果 |
+| GET | `/remotes/{id}/status` | 远程 Agent 当前状态 + 是否有待派发输入 |
 | | **进化端点 (evolution_routes.py)** | |
 | POST | `/evolution/tasks` | 创建任务（含 grader_skill） |
 | GET | `/evolution/tasks` | 列出所有任务 |

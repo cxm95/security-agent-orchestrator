@@ -50,6 +50,31 @@ if git_remote:
 # Recall mode: "full" = git clone + text grep; "selective" = BM25 recall + on-demand fetch
 RECALL_MODE = os.environ.get("CAO_RECALL_MODE", "full")
 
+
+def _read_hook_state_tid() -> str:
+    """Read terminal_id from the SessionStart hook's state file.
+
+    The hook writes JSON to:
+      ~/.cao-evolution-client/state/claude-code-{profile}.json
+    containing {"terminal_id": "...", "session_dir": "..."}.
+
+    Returns the terminal_id if found, empty string otherwise.
+    """
+    from pathlib import Path
+
+    client_dir = os.environ.get(
+        "CAO_CLIENT_DIR",
+        str(Path.home() / ".cao-evolution-client"),
+    )
+    state_file = Path(client_dir).expanduser() / "state" / f"claude-code-{agent_profile}.json"
+    if not state_file.exists():
+        return ""
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        return data.get("terminal_id", "")
+    except Exception:
+        return ""
+
 mcp = FastMCP(
     "cao-bridge",
     instructions=(
@@ -61,10 +86,28 @@ mcp = FastMCP(
 
 @mcp.tool()
 async def cao_register() -> str:
-    """Register this agent with the CAO Hub. Call once at session start.
-    Returns the assigned terminal_id."""
-    tid = bridge.register()
-    return json.dumps({"terminal_id": tid, "status": "registered"})
+    """Register or reattach this agent with the CAO Hub.
+
+    Call once at session start. Checks multiple sources for a cached
+    terminal_id (session metadata, hook state file) and reattaches if
+    found. Falls back to a fresh register when the cached id is stale.
+    """
+    cached = ""
+    # Source 1: session_manager metadata (git-based sessions)
+    if bridge.session_dir:
+        try:
+            from session_manager import get_terminal_id
+            cached = get_terminal_id(bridge.session_dir)
+        except Exception:
+            cached = ""
+
+    # Source 2: SessionStart hook state file (Claude Code hooks)
+    if not cached:
+        cached = _read_hook_state_tid()
+
+    tid = bridge.register_or_reattach(cached_terminal_id=cached)
+    status = "reattached" if cached and cached == tid else "registered"
+    return json.dumps({"terminal_id": tid, "status": status})
 
 
 @mcp.tool()

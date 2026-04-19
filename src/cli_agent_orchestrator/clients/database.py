@@ -58,6 +58,25 @@ class FlowModel(Base):
     enabled = Column(Boolean, default=True)
 
 
+class RemoteStateModel(Base):
+    """Persisted state for a RemoteProvider terminal.
+
+    Mirrors the in-memory fields of ``providers.remote.RemoteProvider`` so
+    that the Hub can rehydrate them after an unexpected restart and remote
+    agents can continue with their pending_input / last_output intact.
+    """
+
+    __tablename__ = "remote_state"
+
+    terminal_id = Column(String, primary_key=True)
+    status = Column(String, nullable=False, default="idle")
+    pending_input = Column(String, nullable=True)
+    last_output = Column(String, nullable=False, default="")
+    full_output = Column(String, nullable=False, default="")
+    last_seen_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now)
+
+
 # Module-level singletons
 DB_DIR.mkdir(parents=True, exist_ok=True)
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -162,21 +181,111 @@ def list_all_terminals() -> List[Dict[str, Any]]:
 
 
 def delete_terminal(terminal_id: str) -> bool:
-    """Delete terminal metadata."""
+    """Delete terminal metadata and any associated remote_state row."""
     with SessionLocal() as db:
+        db.query(RemoteStateModel).filter(
+            RemoteStateModel.terminal_id == terminal_id
+        ).delete()
         deleted = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).delete()
         db.commit()
         return deleted > 0
 
 
 def delete_terminals_by_session(tmux_session: str) -> int:
-    """Delete all terminals in a session."""
+    """Delete all terminals in a session (and their remote_state rows)."""
     with SessionLocal() as db:
+        tids = [
+            t.id
+            for t in db.query(TerminalModel)
+            .filter(TerminalModel.tmux_session == tmux_session)
+            .all()
+        ]
+        if tids:
+            db.query(RemoteStateModel).filter(
+                RemoteStateModel.terminal_id.in_(tids)
+            ).delete(synchronize_session=False)
         deleted = (
             db.query(TerminalModel).filter(TerminalModel.tmux_session == tmux_session).delete()
         )
         db.commit()
         return deleted
+
+
+# Remote state CRUD --------------------------------------------------------
+
+
+_REMOTE_STATE_FIELDS = {
+    "status",
+    "pending_input",
+    "last_output",
+    "full_output",
+    "last_seen_at",
+}
+
+
+def upsert_remote_state(terminal_id: str, **fields: Any) -> None:
+    """Create or update the remote_state row for ``terminal_id``.
+
+    Only the fields present in ``fields`` are written; unspecified columns
+    keep their current value (or the model default on first insert).
+    Unknown keys are ignored so callers can pass timestamps or future
+    columns without raising.
+    """
+    filtered = {k: v for k, v in fields.items() if k in _REMOTE_STATE_FIELDS}
+    now = datetime.now()
+    with SessionLocal() as db:
+        row = (
+            db.query(RemoteStateModel)
+            .filter(RemoteStateModel.terminal_id == terminal_id)
+            .first()
+        )
+        if row is None:
+            row = RemoteStateModel(terminal_id=terminal_id)
+            db.add(row)
+        for key, value in filtered.items():
+            setattr(row, key, value)
+        row.updated_at = now
+        if "last_seen_at" not in filtered:
+            row.last_seen_at = row.last_seen_at or now
+        db.commit()
+
+
+def get_remote_state(terminal_id: str) -> Optional[Dict[str, Any]]:
+    """Return the remote_state row for ``terminal_id`` or None."""
+    with SessionLocal() as db:
+        row = (
+            db.query(RemoteStateModel)
+            .filter(RemoteStateModel.terminal_id == terminal_id)
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "terminal_id": row.terminal_id,
+            "status": row.status,
+            "pending_input": row.pending_input,
+            "last_output": row.last_output or "",
+            "full_output": row.full_output or "",
+            "last_seen_at": row.last_seen_at,
+            "updated_at": row.updated_at,
+        }
+
+
+def touch_remote_state_last_seen(terminal_id: str) -> None:
+    """Bump ``last_seen_at`` to now, creating the row if needed."""
+    upsert_remote_state(terminal_id, last_seen_at=datetime.now())
+
+
+def delete_remote_state(terminal_id: str) -> bool:
+    """Remove the remote_state row for ``terminal_id``."""
+    with SessionLocal() as db:
+        deleted = (
+            db.query(RemoteStateModel)
+            .filter(RemoteStateModel.terminal_id == terminal_id)
+            .delete()
+        )
+        db.commit()
+        return deleted > 0
 
 
 def create_inbox_message(sender_id: str, receiver_id: str, message: str) -> InboxMessage:

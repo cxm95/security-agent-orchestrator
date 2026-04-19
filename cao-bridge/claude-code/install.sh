@@ -65,36 +65,56 @@ if [ "$MODE" = "global" ]; then
   END_HOOK="$SCRIPT_DIR/hooks/cao-session-stop.sh"
   chmod +x "$START_HOOK" "$END_HOOK"
 
-  # 1. MCP server → ~/.claude.json (user scope)
-  CLAUDE_JSON="$HOME/.claude.json"
-  backup_if_exists "$CLAUDE_JSON"
-  cat > "$CLAUDE_JSON" <<EOF
+  # 1. MCP server → .mcp.json template (project-level, per-session)
+  #    Note: clother-closeai uses per-process config dirs (/tmp/clother-claude-config-*/),
+  #    so ~/.claude.json user.mcpServers is NOT read. MCP must be .mcp.json in cwd.
+  #    We generate a template that run_experiment.py copies into each session dir.
+  MCP_TEMPLATE="$SCRIPT_DIR/.mcp.json.template"
+  cat > "$MCP_TEMPLATE" <<EOF
 {
-  "user": {
-    "mcpServers": {
-      "cao-bridge": {
-        "command": "python3",
-        "args": ["$MCP_PY"],
-        "env": {
-          "CAO_HUB_URL": "${CAO_HUB_URL:-http://127.0.0.1:9889}",
-          "CAO_AGENT_PROFILE": "remote-claude-code",
-          "CAO_GIT_REMOTE": "${CAO_GIT_REMOTE:-}",
-          "CAO_CLIENT_DIR": "${CAO_CLIENT_DIR:-$HOME/.cao-evolution-client}",
-          "no_proxy": "127.0.0.1,localhost",
-          "NO_PROXY": "127.0.0.1,localhost"
-        }
+  "mcpServers": {
+    "cao-bridge": {
+      "command": "python3",
+      "args": ["$MCP_PY"],
+      "env": {
+        "CAO_HUB_URL": "${CAO_HUB_URL:-http://127.0.0.1:9889}",
+        "CAO_AGENT_PROFILE": "remote-claude-code",
+        "CAO_GIT_REMOTE": "${CAO_GIT_REMOTE:-}",
+        "CAO_CLIENT_DIR": "${CAO_CLIENT_DIR:-$HOME/.cao-evolution-client}",
+        "no_proxy": "127.0.0.1,localhost",
+        "NO_PROXY": "127.0.0.1,localhost"
       }
     }
   }
 }
 EOF
-  echo "  Installed MCP config → $CLAUDE_JSON"
+  echo "  Created MCP template → $MCP_TEMPLATE"
+  echo "  (MCP requires .mcp.json in each session dir — run_experiment.py handles this)"
 
-  # 2. Hooks → ~/.claude/settings.local.json
+  # 2. Hooks → ~/.claude/settings.json (user scope, applies to all projects)
+  #    Note: settings.local.json is project-scoped only; settings.json is global.
   mkdir -p "$HOME/.claude"
-  SETTINGS="$HOME/.claude/settings.local.json"
+  SETTINGS="$HOME/.claude/settings.json"
   backup_if_exists "$SETTINGS"
-  cat > "$SETTINGS" <<EOF
+
+  # Read existing settings.json and merge hooks into it
+  if [ -f "$SETTINGS" ] && python3 -c "import json; json.load(open('$SETTINGS'))" 2>/dev/null; then
+    # Merge hooks into existing config
+    python3 - "$SETTINGS" "$START_HOOK" "$GRADER_HOOK" "$END_HOOK" <<'PY'
+import json, sys
+path, start, grader, end = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(path) as f:
+    cfg = json.load(f)
+cfg["hooks"] = {
+    "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": start}]}],
+    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": f"python3 {grader}"}]}],
+    "SessionEnd": [{"matcher": "", "hooks": [{"type": "command", "command": end}]}],
+}
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+PY
+  else
+    cat > "$SETTINGS" <<EOF
 {
   "hooks": {
     "SessionStart": [{
@@ -112,6 +132,7 @@ EOF
   }
 }
 EOF
+  fi
   echo "  Installed hooks → $SETTINGS"
 
   # 3. CLAUDE.md → ~/.claude/CLAUDE.md
@@ -125,11 +146,29 @@ EOF
   cp "$SCRIPT_DIR/commands/evolve.md" "$HOME/.claude/commands/evolve.md"
   echo "  Installed /evolve command → ~/.claude/commands/evolve.md"
 
+  # 5. Evo-skills → ~/.claude/skills/ (grader, reflect, consolidate, etc.)
+  EVO_SKILLS_SRC="$CAO_BRIDGE_DIR/../evo-skills"
+  if [ -d "$EVO_SKILLS_SRC" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    for skill_dir in "$EVO_SKILLS_SRC"/*/; do
+      [ -f "${skill_dir}SKILL.md" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      dst="$HOME/.claude/skills/$skill_name"
+      mkdir -p "$dst"
+      cp -r "$skill_dir"* "$dst/"
+      echo "  Installed evo-skill: $skill_name → $dst"
+    done
+  fi
+
   echo ""
   echo "Done! CAO Bridge installed globally for Claude Code."
-  echo "  MCP tools: cao_register, cao_poll, cao_report, cao_report_score, ..."
-  echo "  Command:   /evolve — trigger evolution cycle"
   echo "  Hooks:     SessionStart (register), Stop (auto-grading), SessionEnd (cleanup)"
+  echo "  CLAUDE.md: CAO protocol instructions"
+  echo "  Command:   /evolve — trigger evolution cycle"
+  echo ""
+  echo "  NOTE: MCP requires .mcp.json in each session directory (cwd)."
+  echo "  For manual testing: cp $MCP_TEMPLATE /path/to/session/.mcp.json"
+  echo "  For experiments:    run_experiment.py handles this automatically."
   exit 0
 fi
 
@@ -211,6 +250,20 @@ else
   echo "  .claude/settings.local.json exists — add hooks manually:"
   echo "    SessionStart: $START_HOOK"
   echo "    Stop: python3 $GRADER_HOOK"
+fi
+
+# 6. Evo-skills → $TARGET/.claude/skills/
+EVO_SKILLS_SRC="$CAO_BRIDGE_DIR/../evo-skills"
+if [ -d "$EVO_SKILLS_SRC" ]; then
+  mkdir -p "$TARGET/.claude/skills"
+  for skill_dir in "$EVO_SKILLS_SRC"/*/; do
+    [ -f "${skill_dir}SKILL.md" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    dst="$TARGET/.claude/skills/$skill_name"
+    mkdir -p "$dst"
+    cp -r "$skill_dir"* "$dst/"
+    echo "  Installed evo-skill: $skill_name → $dst"
+  done
 fi
 
 echo ""

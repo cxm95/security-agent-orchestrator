@@ -132,6 +132,18 @@ def set_terminal_id(session_dir: Path, terminal_id: str) -> None:
     _write_meta(session_dir, meta)
 
 
+def get_terminal_id(session_dir: Path) -> str:
+    """Return the Hub-assigned terminal_id stored in session metadata.
+
+    Empty string when the session doesn't exist, the metadata is
+    missing/corrupt, or no terminal_id has been written yet.
+    """
+    meta = _read_meta(session_dir)
+    if not meta:
+        return ""
+    return meta.get("terminal_id", "") or ""
+
+
 def deactivate_session(session_dir: Path) -> None:
     """Mark session as inactive (called on normal agent exit)."""
     meta = _read_meta(session_dir)

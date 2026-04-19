@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "cao-bridge": {
+      "command": "python3",
+      "args": ["/home/ubuntu/projects/SecAgentNet-v1/security-agent-orchestrator/cao-bridge/cao_bridge_mcp.py"],
+      "env": {
+        "CAO_HUB_URL": "http://127.0.0.1:9889",
+        "CAO_AGENT_PROFILE": "remote-claude-code",
+        "CAO_GIT_REMOTE": "",
+        "CAO_CLIENT_DIR": "/home/ubuntu/.cao-evolution-client",
+        "no_proxy": "127.0.0.1,localhost",
+        "NO_PROXY": "127.0.0.1,localhost"
+      }
+    }
+  }
+}

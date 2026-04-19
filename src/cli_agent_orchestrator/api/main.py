@@ -49,6 +49,7 @@ from cli_agent_orchestrator.services import (
 from cli_agent_orchestrator.api.evolution_routes import ensure_evolution_repo, router as evolution_router
 from cli_agent_orchestrator.services.cleanup_service import cleanup_old_data
 from cli_agent_orchestrator.services.inbox_service import LogFileHandler
+from cli_agent_orchestrator.services.recovery_service import recover_on_startup
 from cli_agent_orchestrator.services.terminal_service import OutputMode
 from cli_agent_orchestrator.utils.agent_profiles import resolve_provider
 from cli_agent_orchestrator.utils.logging import setup_logging
@@ -117,6 +118,15 @@ async def lifespan(app: FastAPI):
     setup_logging()
     init_db()
     ensure_evolution_repo()
+
+    # Reattach to terminals that persisted from the previous run so remote
+    # agents (RemoteProvider) can continue polling without re-registering
+    # and local tmux sessions resume inbox monitoring via pipe-pane.
+    try:
+        report = await asyncio.to_thread(recover_on_startup)
+        logger.info(f"Startup recovery: {report.summary()}")
+    except Exception as e:
+        logger.error(f"Startup recovery failed (continuing anyway): {e}")
 
     # Run cleanup in background
     asyncio.create_task(asyncio.to_thread(cleanup_old_data))
@@ -648,6 +658,55 @@ async def remote_register(body: RemoteRegisterRequest) -> Dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/remotes/{terminal_id}/reattach")
+async def remote_reattach(terminal_id: str) -> Dict:
+    """Reattach an existing remote terminal after an agent cold-start.
+
+    Called by the agent's SessionStart hook when it already has a cached
+    ``terminal_id``.  Returns the persisted state so the agent can decide
+    whether queued work is still waiting for it.  A 404 here tells the
+    agent its cached id is gone and it should fall back to
+    ``POST /remotes/register``.
+    """
+    try:
+        metadata = get_terminal_metadata(terminal_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail="Terminal not found")
+        if metadata["provider"] != "remote":
+            raise HTTPException(status_code=400, detail="Not a remote terminal")
+
+        from cli_agent_orchestrator.clients.database import (
+            get_pending_messages,
+            get_remote_state,
+            touch_remote_state_last_seen,
+        )
+
+        provider = provider_manager.get_provider(terminal_id)
+        # Agent is starting fresh — clear any stale PROCESSING/ERROR status so
+        # the next /poll (or inbox delivery) isn't blocked by a status left
+        # behind by the previous crashed session.
+        if provider is not None and hasattr(provider, "reset_for_reattach"):
+            provider.reset_for_reattach()
+        touch_remote_state_last_seen(terminal_id)
+
+        state = get_remote_state(terminal_id) or {}
+        pending_inbox = get_pending_messages(terminal_id, limit=100)
+
+        return {
+            "ok": True,
+            "terminal_id": terminal_id,
+            "session_name": metadata["tmux_session"],
+            "agent_profile": metadata["agent_profile"],
+            "status": state.get("status") or (provider.get_status().value if provider else "idle"),
+            "has_pending_input": bool(state.get("pending_input")),
+            "pending_inbox_count": len(pending_inbox),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/remotes/{terminal_id}/poll")
 async def remote_poll(terminal_id: str) -> Dict:
     """Remote agent polls for pending input."""
@@ -1011,7 +1070,41 @@ def main():
     )
     parser.add_argument("--host", type=str, default=None, help="Server host")
     parser.add_argument("--port", type=int, default=None, help="Server port")
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Delete all persisted state (DB, evolution data, logs) and start clean",
+    )
     args = parser.parse_args()
+
+    if args.fresh:
+        import shutil
+
+        from cli_agent_orchestrator.constants import (
+            CAO_HOME_DIR,
+            DATABASE_FILE,
+            DB_DIR,
+            LOG_DIR,
+            TERMINAL_LOG_DIR,
+        )
+
+        targets = [
+            DATABASE_FILE,
+            LOG_DIR,
+            Path.home() / ".cao-evolution",
+            Path("/tmp/cao-grader"),
+        ]
+        for t in targets:
+            if t.exists():
+                if t.is_dir():
+                    shutil.rmtree(t)
+                else:
+                    t.unlink()
+                logger.info(f"--fresh: removed {t}")
+
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+        TERMINAL_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info("--fresh: state cleared, starting clean")
 
     if args.agents_dir:
         os.environ["CAO_AGENTS_DIR"] = args.agents_dir

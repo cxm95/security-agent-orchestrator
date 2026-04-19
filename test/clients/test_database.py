@@ -168,7 +168,8 @@ class TestTerminalOperations:
         mock_terminal.last_active = datetime.now()
 
         mock_query = MagicMock()
-        mock_query.filter.return_value.all.return_value = [mock_terminal]
+        # Real chain is filter(...).order_by(...).all(); stub the full path.
+        mock_query.filter.return_value.order_by.return_value.all.return_value = [mock_terminal]
         mock_session.query.return_value = mock_query
         mock_session_class.return_value = mock_session
 

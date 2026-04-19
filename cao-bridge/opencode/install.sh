@@ -91,10 +91,23 @@ if [ "$MODE" = "global" ]; then
   # 1. Plugin
   install_plugin "$OC_CONFIG/plugins"
 
-  # 2. Skills
+  # 2. Skills (task skills from experiment/)
   install_skills "$OC_CONFIG/skills"
 
-  # 3. Check permission config
+  # 3. Evo-skills (grader, reflect, consolidate, etc.)
+  EVO_SKILLS_SRC="$REPO_ROOT/evo-skills"
+  if [ -d "$EVO_SKILLS_SRC" ]; then
+    for skill_dir in "$EVO_SKILLS_SRC"/*/; do
+      [ -f "${skill_dir}SKILL.md" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      dst="$OC_CONFIG/skills/$skill_name"
+      mkdir -p "$dst"
+      cp -r "$skill_dir"* "$dst/"
+      echo "  Installed evo-skill: $skill_name → $dst"
+    done
+  fi
+
+  # 4. Check permission config
   OC_JSON="$OC_CONFIG/opencode.json"
   if [ -f "$OC_JSON" ]; then
     if grep -q '"permission"' "$OC_JSON" 2>/dev/null; then
@@ -125,6 +138,19 @@ install_plugin "$TARGET/.opencode/plugins"
 
 # Skills → project .opencode/skills/
 install_skills "$TARGET/.opencode/skills"
+
+# Evo-skills → project .opencode/skills/
+EVO_SKILLS_SRC="$REPO_ROOT/evo-skills"
+if [ -d "$EVO_SKILLS_SRC" ]; then
+  for skill_dir in "$EVO_SKILLS_SRC"/*/; do
+    [ -f "${skill_dir}SKILL.md" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    dst="$TARGET/.opencode/skills/$skill_name"
+    mkdir -p "$dst"
+    cp -r "$skill_dir"* "$dst/"
+    echo "  Installed evo-skill: $skill_name → $dst"
+  done
+fi
 
 echo ""
 echo "Done! Start OpenCode in $TARGET to use CAO Bridge."

@@ -21,9 +21,20 @@ import re
 import sys
 from pathlib import Path
 
+# Bypass proxy for local Hub communication
+os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
+if "127.0.0.1" not in os.environ.get("no_proxy", ""):
+    os.environ["no_proxy"] = os.environ.get("no_proxy", "") + ",127.0.0.1,localhost"
+os.environ["NO_PROXY"] = os.environ["no_proxy"]
+
 HUB = os.environ.get("CAO_HUB_URL", "http://127.0.0.1:9889").rstrip("/")
 SESSION_STATE = os.environ.get("CAO_STATE_FILE", "")
 DEBUG = os.environ.get("CAO_DEBUG", "") == "1"
+
+# Unified kill switch — set CAO_HOOKS_ENABLED=0 to disable all CAO hooks
+if os.environ.get("CAO_HOOKS_ENABLED", "1") == "0":
+    json.dump({}, sys.stdout)
+    sys.exit(0)
 
 GRADER_STATE_DIR = Path("/tmp/cao-grader")
 GRADER_STATE_DIR.mkdir(exist_ok=True)
@@ -107,7 +118,17 @@ def get_terminal_id() -> str:
             return data.get("terminal_id", "")
         except Exception:
             pass
-    for f in sorted(Path("/tmp").glob("cao-claude-state-*.json"), reverse=True):
+
+    # Stable path: $CAO_CLIENT_BASE_DIR/state/claude-code-<profile>.json,
+    # written by cao-session-start.sh.  Fall back to the legacy /tmp
+    # pattern so pre-upgrade sessions still work while they drain.
+    base = Path(os.environ.get("CAO_CLIENT_BASE_DIR", str(Path.home() / ".cao-evolution-client")))
+    state_dir = base / "state"
+    candidates = []
+    if state_dir.exists():
+        candidates.extend(sorted(state_dir.glob("claude-code-*.json"), reverse=True))
+    candidates.extend(sorted(Path("/tmp").glob("cao-claude-state-*.json"), reverse=True))
+    for f in candidates:
         try:
             data = json.loads(f.read_text())
             tid = data.get("terminal_id", "")
@@ -124,7 +145,12 @@ def extract_task_id(transcript_path: str) -> str:
     try:
         text = Path(transcript_path).read_text()
         matches = re.findall(r"\[CAO Task ID:\s*([^\]]+)\]", text)
-        return matches[-1].strip() if matches else ""
+        if not matches:
+            return ""
+        tid = matches[-1].strip()
+        if not re.match(r"^[a-zA-Z0-9_-]{3,}$", tid):
+            return ""
+        return tid
     except Exception:
         return ""
 
@@ -140,10 +166,11 @@ def extract_feasibility(text: str) -> str:
 
 
 def build_grader_prompt(task_id: str, grader_skill: str, output_snippet: str) -> str:
+    skill_path = Path.home() / ".claude" / "skills" / grader_skill / "SKILL.md"
     return (
         f"You just completed a task. Now grade your own output using the grader skill.\n\n"
         f"## Instructions\n"
-        f"Load and follow evo-skills/{grader_skill}/SKILL.md to evaluate the output.\n\n"
+        f"Read and follow {skill_path} to evaluate the output.\n\n"
         f"## Task ID\n{task_id}\n\n"
         f"## Your Output to Grade\n"
         f"{output_snippet[:3000]}\n\n"
@@ -208,6 +235,7 @@ def main():
             dbg(f"score={score} feasibility={feasibility} task={task_id}")
 
             resp = hub_post(f"/evolution/{task_id}/scores", {
+                "agent_id": terminal_id or "hook",
                 "score": score,
                 "title": f"grader-skill ({feasibility})" if feasibility else "grader-skill",
                 "feedback": feedback,
@@ -272,6 +300,7 @@ def main():
         feasibility = extract_feasibility(last_msg)
         dbg(f"agent self-graded: score={score} task={task_id}")
         hub_post(f"/evolution/{task_id}/scores", {
+            "agent_id": terminal_id or "hook",
             "score": score,
             "title": f"self-graded ({feasibility})" if feasibility else "self-graded",
             "feedback": last_msg[:500],
@@ -282,9 +311,15 @@ def main():
         poll_or_allow(terminal_id, hook_input)
         return
 
-    # Check Hub: has the task been scored already?
+    # Check Hub: does the task exist? Has it been scored already?
     task_info = hub_get(f"/evolution/{task_id}")
-    if task_info and task_info.get("attempt_count", 0) > 0:
+    if not task_info:
+        dbg(f"task {task_id} not found on Hub, ignoring")
+        state.update(phase="idle", task_id="", heartbeats=[])
+        write_state(session_id, state)
+        poll_or_allow(terminal_id, hook_input)
+        return
+    if task_info.get("attempt_count", 0) > 0:
         dbg(f"task {task_id} already has scores, skipping grader")
         state.update(phase="idle", task_id="", heartbeats=[])
         write_state(session_id, state)

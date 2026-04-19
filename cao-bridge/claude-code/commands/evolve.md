@@ -4,8 +4,12 @@ description: Trigger CAO evolution cycle — reflect, report score, share notes
 
 Please perform the following evolution steps:
 
-1. Call `cao_report_score` to evaluate your most recent work on the current task.
-   Provide a meaningful title and score (0-100 integer).
+1. Load the grader skill for your current task:
+   - Call `cao_get_task` to find the `grader_skill` name.
+   - Read `~/.claude/skills/<grader_skill>/SKILL.md` and follow its instructions to evaluate your output.
+   - Print exactly one line: `CAO_SCORE=<integer 0-100>`
+   - The Stop hook will parse this and report the score automatically.
+   - If hooks are NOT active, call `cao_report_score` with the score.
 
 2. Reflect on what worked well and what didn't in your approach.
 

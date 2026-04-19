@@ -80,9 +80,12 @@ When you receive a task:
 After completing a task, participate in the evolution loop:
 
 1. Call `cao_get_task(task_id="<task>")` to get the task info including `grader_skill`.
-2. If `grader_skill` is set, load `evo-skills/<grader_skill>/SKILL.md` and follow its
-   instructions to evaluate your output. The skill should produce `CAO_SCORE=<float>`.
-3. Call `cao_report_score(task_id="<task>", score=<value>, title="<description>")`.
+2. If `grader_skill` is set, read `~/.config/opencode/skills/<grader_skill>/SKILL.md`
+   (or `~/.claude/skills/<grader_skill>/SKILL.md` for Claude Code) and follow its
+   instructions to evaluate your output. Print exactly: `CAO_SCORE=<integer 0-100>`.
+3. **If hooks are active** (Claude Code with Stop hook): the hook parses `CAO_SCORE` from
+   your output and reports the score automatically. Do NOT call `cao_report_score`.
+   **If hooks are NOT active** (MCP-only mode): call `cao_report_score(task_id, score, title)`.
 4. Check the response for `heartbeat_prompts`. If non-empty, proceed to step 4.5.
 5. Otherwise, call `cao_get_leaderboard(task_id="<task>")` to see your ranking.
 
@@ -92,8 +95,8 @@ If `heartbeat_prompts` is non-empty in the `cao_report_score` response:
 
 For each prompt in `heartbeat_prompts`:
 1. Read the prompt — it specifies which **evolution skill** to execute.
-2. Load the skill from `evo-skills/` (pulled via `cao_pull_skills`) or
-   from the session's `skills/` directory.
+2. Load the skill from the provider's global skills directory
+   (`~/.config/opencode/skills/` or `~/.claude/skills/`).
 3. Execute the skill following its SKILL.md instructions.
 4. After the skill completes, call `cao_push` to sync results to Hub.
 

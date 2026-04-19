@@ -105,6 +105,57 @@ class CaoBridge:
                 pass
         return self.terminal_id
 
+    def reattach(self, terminal_id: str) -> Optional[dict]:
+        """Try to reattach an existing Hub-side terminal by id.
+
+        Returns the Hub's reattach payload on success, ``None`` when the
+        Hub returns 404 (the id is stale).  Any other error surfaces via
+        ``requests.HTTPError`` so callers can decide whether to retry or
+        register fresh.
+        """
+        if not terminal_id:
+            return None
+        url = f"{self.hub_url}/remotes/{terminal_id}/reattach"
+        resp = requests.post(url, timeout=self._TIMEOUT)
+        if resp.status_code == 404:
+            logger.info(f"Reattach rejected: terminal {terminal_id} not found on Hub")
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        self.terminal_id = data.get("terminal_id", terminal_id)
+        logger.info(
+            f"Reattached to Hub: terminal_id={self.terminal_id} "
+            f"has_pending_input={data.get('has_pending_input')}"
+        )
+        return data
+
+    def register_or_reattach(self, cached_terminal_id: str = "") -> str:
+        """Reattach using a cached id when possible, else register fresh.
+
+        The caller (session-start hook or MCP bootstrap) is responsible
+        for reading/writing the cache; this helper just picks the right
+        Hub call.  After either path the bridge has ``self.terminal_id``
+        set and the session metadata (if any) is updated.
+        """
+        cached = cached_terminal_id.strip()
+        if cached:
+            try:
+                data = self.reattach(cached)
+                if data:
+                    if self._session_dir:
+                        try:
+                            from session_manager import set_terminal_id
+                            set_terminal_id(self._session_dir, self.terminal_id or cached)
+                        except Exception:
+                            pass
+                    return self.terminal_id or cached
+            except requests.RequestException as e:
+                # Hub reachable issues: log and fall back to register so
+                # the agent is not stranded.
+                logger.warning(f"Reattach failed ({e}), falling back to register")
+
+        return self.register()
+
     def poll(self) -> Optional[str]:
         """Poll Hub for pending input. Returns message or None."""
         if not self.terminal_id:

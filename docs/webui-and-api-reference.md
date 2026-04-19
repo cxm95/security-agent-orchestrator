@@ -162,6 +162,7 @@ app = FastAPI(title="CLI Agent Orchestrator", lifespan=lifespan)
 @app.post("/terminals/{receiver_id}/inbox/messages")
 @app.get("/terminals/{terminal_id}/inbox/messages")
 @app.post("/remotes/register")
+@app.post("/remotes/{terminal_id}/reattach")
 @app.get("/remotes/{terminal_id}/poll")
 @app.post("/remotes/{terminal_id}/report")
 @app.get("/remotes/{terminal_id}/status")
@@ -225,9 +226,17 @@ app.include_router(router)
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/remotes/register` | 远程 Agent 注册 (返回 terminal_id) |
-| GET | `/remotes/{id}/poll` | 轮询待执行命令 |
-| POST | `/remotes/{id}/report` | 上报执行结果 |
+| POST | `/remotes/{id}/reattach` | 冷启动复用已注册 terminal_id，返回持久化状态；404 则 fallback register |
+| GET | `/remotes/{id}/poll` | 轮询待执行命令 (会消耗 pending_input, 顺带将 inbox → virtual queue) |
+| POST | `/remotes/{id}/report` | 上报状态/输出 (full_output 持久化时尾部裁剪到 128KB) |
 | GET | `/remotes/{id}/status` | 获取远程 Agent 状态 |
+
+> **崩溃恢复 (Hub 断点续传)**: `RemoteProvider` 的 `status` / `pending_input` /
+> `last_output` / `full_output` 每次变更都镜像到 `remote_state` 表。Hub 重启时
+> `lifespan` 调用 `RecoveryService.recover_all()` 从该表 rehydrate 所有
+> `RemoteProvider` 实例；远程 Agent 冷启动通过 `/remotes/{id}/reattach` 接回，
+> 期间 `reset_for_reattach()` 会把上次崩溃残留的 `processing`/`error` 状态
+> 清回 `idle`，避免 inbox 投递被阻塞。
 
 #### 3.2.7 定时任务 (Flows)
 
