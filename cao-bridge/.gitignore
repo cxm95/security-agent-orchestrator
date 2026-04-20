@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node / TS
+node_modules/
+dist/
+
+# OS / editor
+.DS_Store
+*.swp
