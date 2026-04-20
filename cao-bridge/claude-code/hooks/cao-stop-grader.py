@@ -155,6 +155,14 @@ def extract_task_id(transcript_path: str) -> str:
         return ""
 
 
+# Task ids matching this pattern are "test / dry-run" — skip grader & heartbeat.
+_TEST_TASK_RE = re.compile(r"^(test|generic)(-.*)?$", re.IGNORECASE)
+
+
+def is_test_task(task_id: str) -> bool:
+    return bool(task_id) and bool(_TEST_TASK_RE.match(task_id))
+
+
 def extract_score(text: str) -> int | None:
     m = re.search(r"CAO_SCORE\s*=\s*(\d+)", text)
     return int(m.group(1)) if m else None
@@ -240,6 +248,12 @@ def main():
                 "title": f"grader-skill ({feasibility})" if feasibility else "grader-skill",
                 "feedback": feedback,
                 "agent_profile": profile,
+                "evolution_signals": {
+                    "score": score,
+                    "feasibility": feasibility or "UNKNOWN",
+                    "source": "stop-hook-grader",
+                    "agent_profile": profile,
+                },
             })
 
             new_heartbeats = []
@@ -248,14 +262,16 @@ def main():
                 dbg(f"heartbeats: {[h.get('name') for h in new_heartbeats]}")
 
             if new_heartbeats:
-                state.update(phase="heartbeat", heartbeats=new_heartbeats, task_id="")
+                state.update(phase="heartbeat", heartbeats=new_heartbeats, task_id="",
+                             scored_this_session=True)
                 write_state(session_id, state)
                 hb = new_heartbeats[0]
                 state["heartbeats"] = new_heartbeats[1:]
                 write_state(session_id, state)
                 block(hb.get("prompt", hb.get("name", "evolve")))
             else:
-                state.update(phase="idle", task_id="", heartbeats=[])
+                state.update(phase="idle", task_id="", heartbeats=[],
+                             scored_this_session=True)
                 write_state(session_id, state)
                 poll_or_allow(terminal_id, hook_input)
         else:
@@ -285,12 +301,20 @@ def main():
     if not task_id:
         task_id = extract_task_id(transcript_path)
         if task_id:
-            state["task_id"] = task_id
+            state.update(task_id=task_id, scored_this_session=False)
             write_state(session_id, state)
             dbg(f"detected task_id from transcript: {task_id}")
 
     if not task_id:
         # No task in-flight — this is exactly the moment to pick up queued work.
+        poll_or_allow(terminal_id, hook_input)
+        return
+
+    # Test / dry-run task → skip grader, heartbeat, and score reporting entirely.
+    if is_test_task(task_id):
+        dbg(f"test task {task_id} detected, skipping evolution pipeline")
+        state.update(phase="idle", task_id="", heartbeats=[], scored_this_session=True)
+        write_state(session_id, state)
         poll_or_allow(terminal_id, hook_input)
         return
 
@@ -305,13 +329,19 @@ def main():
             "title": f"self-graded ({feasibility})" if feasibility else "self-graded",
             "feedback": last_msg[:500],
             "agent_profile": profile,
+            "evolution_signals": {
+                "score": score,
+                "feasibility": feasibility or "UNKNOWN",
+                "source": "stop-hook-self-graded",
+                "agent_profile": profile,
+            },
         })
-        state.update(phase="idle", task_id="", heartbeats=[])
+        state.update(phase="idle", task_id="", heartbeats=[], scored_this_session=True)
         write_state(session_id, state)
         poll_or_allow(terminal_id, hook_input)
         return
 
-    # Check Hub: does the task exist? Has it been scored already?
+    # Check Hub: does the task exist?
     task_info = hub_get(f"/evolution/{task_id}")
     if not task_info:
         dbg(f"task {task_id} not found on Hub, ignoring")
@@ -319,8 +349,11 @@ def main():
         write_state(session_id, state)
         poll_or_allow(terminal_id, hook_input)
         return
-    if task_info.get("attempt_count", 0) > 0:
-        dbg(f"task {task_id} already has scores, skipping grader")
+
+    # Skip grading only if THIS terminal already scored in THIS session.
+    # Previous attempts from other agents/sessions should not block grading.
+    if state.get("scored_this_session"):
+        dbg(f"task {task_id} already scored in this session, skipping grader")
         state.update(phase="idle", task_id="", heartbeats=[])
         write_state(session_id, state)
         poll_or_allow(terminal_id, hook_input)

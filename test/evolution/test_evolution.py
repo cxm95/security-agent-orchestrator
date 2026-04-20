@@ -168,8 +168,8 @@ class TestCheckpoint:
 
     def test_checkpoint_returns_sha_on_change(self):
         sd = init_checkpoint_repo(str(self.evo_dir))
-        (sd / "tasks" / "test-task").mkdir(parents=True)
-        (sd / "tasks" / "test-task" / "task.yaml").write_text("name: test\n")
+        (sd / "tasks" / "task-demo").mkdir(parents=True)
+        (sd / "tasks" / "task-demo" / "task.yaml").write_text("name: test\n")
         sha = checkpoint(str(self.evo_dir), "agent-1", "added task")
         assert sha is not None
         assert len(sha) == 40  # full SHA

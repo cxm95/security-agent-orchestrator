@@ -22,6 +22,7 @@ import logging
 import os
 import atexit
 import sys
+from typing import Optional
 
 from fastmcp import FastMCP
 
@@ -189,6 +190,7 @@ async def cao_report_score(
     feedback: str = "",
     agent_profile: str = "",
     batch: str = "",
+    evolution_signals: Optional[dict] = None,
 ) -> str:
     """Report an evaluation score to the Hub.
 
@@ -199,10 +201,13 @@ async def cao_report_score(
         feedback: Grader feedback text
         agent_profile: Agent profile name (e.g., "remote-opencode")
         batch: Batch identifier (e.g., "batch-1")
+        evolution_signals: Optional structured context (score, feasibility, etc)
+            passed to heartbeat prompts (e.g., cao-reflect).
     """
     result = bridge.report_score(
         task_id, score, title=title, feedback=feedback,
         agent_profile=agent_profile, batch=batch,
+        evolution_signals=evolution_signals,
     )
     return json.dumps(result)
 

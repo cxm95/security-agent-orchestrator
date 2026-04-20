@@ -72,12 +72,30 @@ def init_checkpoint_repo(evolution_dir: str | Path = DEFAULT_EVOLUTION_DIR) -> P
         (sd / sub).mkdir(parents=True, exist_ok=True)
 
     try:
-        _git(sd, "init")
+        # Try `git init -b main` (git >= 2.28). Fall back to `git init` +
+        # symbolic-ref for older git so the initial branch is always `main`
+        # — this matches GitHub's default and avoids a master/main mismatch
+        # when a remote is configured later.
+        try:
+            _git(sd, "init", "-b", "main")
+        except subprocess.CalledProcessError:
+            _git(sd, "init")
+            try:
+                _git(sd, "symbolic-ref", "HEAD", "refs/heads/main")
+            except subprocess.CalledProcessError:
+                pass
         _git(sd, "config", "user.name", "cao-evolution")
         _git(sd, "config", "user.email", "cao@local")
         (sd / ".gitignore").write_text("*.lock\n__pycache__/\nheartbeat/\n")
         _git(sd, "add", "-A")
         _git(sd, "commit", "--allow-empty", "-m", "init: cao-evolution shared state")
+        # If the initial commit landed on `master` (older git without -b support
+        # and no symbolic-ref), rename to `main` to keep parity with the remote.
+        if _current_branch(sd) == "master":
+            try:
+                _git(sd, "branch", "-M", "main")
+            except subprocess.CalledProcessError:
+                pass
         _setup_remote(sd)
         # For fresh init with remote, do initial push to establish remote branch
         if remote_url:

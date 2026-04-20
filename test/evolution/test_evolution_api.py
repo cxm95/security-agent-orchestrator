@@ -42,29 +42,29 @@ def client():
 class TestTaskEndpoints:
     def test_create_task(self, client):
         r = client.post("/evolution/tasks", json={
-            "task_id": "test-scan",
+            "task_id": "scan-demo",
             "name": "Security Scan",
             "description": "Scan repos for vulns",
             "grader_skill": "security-grader",
         })
         assert r.status_code == 201
-        assert r.json()["task_id"] == "test-scan"
+        assert r.json()["task_id"] == "scan-demo"
 
     def test_create_task_duplicate(self, client):
-        r = client.post("/evolution/tasks", json={"task_id": "test-scan"})
+        r = client.post("/evolution/tasks", json={"task_id": "scan-demo"})
         assert r.status_code == 409
 
     def test_list_tasks(self, client):
         r = client.get("/evolution/tasks")
         assert r.status_code == 200
         ids = [t["task_id"] for t in r.json()]
-        assert "test-scan" in ids
+        assert "scan-demo" in ids
 
     def test_get_task(self, client):
-        r = client.get("/evolution/test-scan")
+        r = client.get("/evolution/scan-demo")
         assert r.status_code == 200
         data = r.json()
-        assert data["task_id"] == "test-scan"
+        assert data["task_id"] == "scan-demo"
         assert data["grader_skill"] == "security-grader"
         assert data["attempt_count"] == 0
 
@@ -74,7 +74,7 @@ class TestTaskEndpoints:
 
     def test_get_task_grader_skill(self, client):
         """Task with grader_skill should return it in the response."""
-        r = client.get("/evolution/test-scan")
+        r = client.get("/evolution/scan-demo")
         assert r.status_code == 200
         assert r.json()["grader_skill"] == "security-grader"
 
@@ -90,7 +90,7 @@ class TestTaskEndpoints:
 
 class TestScoreEndpoints:
     def test_submit_first_score(self, client):
-        r = client.post("/evolution/test-scan/scores", json={
+        r = client.post("/evolution/scan-demo/scores", json={
             "agent_id": "agent-1",
             "score": 0.72,
             "title": "first attempt",
@@ -105,7 +105,7 @@ class TestScoreEndpoints:
         assert data["evals_since_improvement"] == 0
 
     def test_submit_better_score(self, client):
-        r = client.post("/evolution/test-scan/scores", json={
+        r = client.post("/evolution/scan-demo/scores", json={
             "agent_id": "agent-1",
             "score": 0.85,
             "title": "improved attempt",
@@ -115,7 +115,7 @@ class TestScoreEndpoints:
         assert data["best_score"] == 0.85
 
     def test_submit_worse_score(self, client):
-        r = client.post("/evolution/test-scan/scores", json={
+        r = client.post("/evolution/scan-demo/scores", json={
             "agent_id": "agent-1",
             "score": 0.60,
             "title": "regression",
@@ -126,7 +126,7 @@ class TestScoreEndpoints:
         assert data["evals_since_improvement"] == 1
 
     def test_submit_equal_score(self, client):
-        r = client.post("/evolution/test-scan/scores", json={
+        r = client.post("/evolution/scan-demo/scores", json={
             "agent_id": "agent-1",
             "score": 0.85,
             "title": "same as best",
@@ -134,7 +134,7 @@ class TestScoreEndpoints:
         assert r.json()["status"] == "baseline"
 
     def test_submit_crashed(self, client):
-        r = client.post("/evolution/test-scan/scores", json={
+        r = client.post("/evolution/scan-demo/scores", json={
             "agent_id": "agent-1",
             "score": None,
             "title": "crashed run",
@@ -154,21 +154,21 @@ class TestScoreEndpoints:
 
 class TestLeaderboardEndpoints:
     def test_leaderboard(self, client):
-        r = client.get("/evolution/test-scan/leaderboard")
+        r = client.get("/evolution/scan-demo/leaderboard")
         assert r.status_code == 200
         data = r.json()
-        assert data["task_id"] == "test-scan"
+        assert data["task_id"] == "scan-demo"
         assert len(data["entries"]) >= 3
         # Sorted by score descending
         scores = [e["score"] for e in data["entries"] if e["score"] is not None]
         assert scores == sorted(scores, reverse=True)
 
     def test_leaderboard_formatted(self, client):
-        r = client.get("/evolution/test-scan/leaderboard")
+        r = client.get("/evolution/scan-demo/leaderboard")
         assert "Rank" in r.json()["formatted"]
 
     def test_attempts(self, client):
-        r = client.get("/evolution/test-scan/attempts")
+        r = client.get("/evolution/scan-demo/attempts")
         assert r.status_code == 200
         assert len(r.json()) >= 3
 
@@ -177,7 +177,7 @@ class TestLeaderboardEndpoints:
 
 class TestProfileBatchGroup:
     def test_submit_score_with_profile_and_batch(self, client):
-        r = client.post("/evolution/test-scan/scores", json={
+        r = client.post("/evolution/scan-demo/scores", json={
             "agent_id": "agent-oc1",
             "score": 0.65,
             "title": "opencode attempt",
@@ -189,7 +189,7 @@ class TestProfileBatchGroup:
         assert data["status"] in ("improved", "baseline", "regressed")
 
     def test_attempts_include_profile_and_batch(self, client):
-        r = client.get("/evolution/test-scan/attempts", params={
+        r = client.get("/evolution/scan-demo/attempts", params={
             "agent_profile": "remote-opencode",
         })
         assert r.status_code == 200
@@ -198,7 +198,7 @@ class TestProfileBatchGroup:
         assert all(e.get("agent_profile") == "remote-opencode" for e in entries)
 
     def test_attempts_filter_by_batch(self, client):
-        r = client.get("/evolution/test-scan/attempts", params={
+        r = client.get("/evolution/scan-demo/attempts", params={
             "batch": "batch-1",
         })
         assert r.status_code == 200
@@ -257,7 +257,7 @@ class TestNoteEndpoints:
             "content": "Use iptables -L -n for fast listing.",
             "tags": ["security", "linux"],
             "agent_id": "agent-1",
-            "origin_task": "test-scan",
+            "origin_task": "scan-demo",
             "origin_score": 0.85,
         })
         assert r.status_code == 201
@@ -548,3 +548,40 @@ class TestTaskUpsert:
             "grader_skill": "../../etc/passwd",
         })
         assert r.status_code == 422
+
+
+# ── Test-task dry-run skip (test-* / generic-* prefix) ──────────────────
+
+class TestTestTaskSkip:
+    def test_is_test_task_helper(self):
+        from cli_agent_orchestrator.api.evolution_routes import is_test_task
+        assert is_test_task("test")
+        assert is_test_task("test-foo")
+        assert is_test_task("TEST-foo")
+        assert is_test_task("generic")
+        assert is_test_task("generic-bar")
+        assert not is_test_task("scan-demo")
+        assert not is_test_task("testing-scan")  # must match test$ or test-
+        assert not is_test_task("")
+
+    def test_score_skipped_for_test_task(self, client):
+        r = client.post("/evolution/test-probe/scores", json={
+            "agent_id": "a1",
+            "score": 77.0,
+            "title": "should-not-persist",
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "skipped"
+        assert data["run_id"] == "test-skip"
+        assert data["heartbeat_prompts"] == []
+        # Leaderboard must stay empty (no attempts written)
+        lb = client.get("/evolution/test-probe/leaderboard").json()
+        assert lb.get("entries", []) == []
+
+    def test_score_skipped_for_generic_prefix(self, client):
+        r = client.post("/evolution/generic-recall/scores", json={
+            "agent_id": "a1", "score": 50.0, "title": "x",
+        })
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"

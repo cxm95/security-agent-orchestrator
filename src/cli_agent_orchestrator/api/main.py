@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, HTTPException, Query, Body, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -111,6 +111,42 @@ class CreateFlowRequest(BaseModel):
         return v
 
 
+
+
+def _start_root_orchestrator() -> str | None:
+    """Create the persistent Root Orchestrator terminal. Returns terminal_id or None.
+
+    The Root Orchestrator is a Hub-internal agent that must NOT trigger the
+    CAO bridge hooks (SessionStart/Stop/End) that are globally installed in
+    ~/.claude/settings.json for remote agents.  We achieve isolation via:
+    1. CAO_HOOKS_ENABLED=0 env var — disables all CAO hooks in the bash scripts
+    2. --bare CLI flag — tells the provider to skip hooks, plugins, CLAUDE.md
+    """
+    from cli_agent_orchestrator.config import load_config
+
+    cfg = load_config().root_orchestrator
+    if not cfg.enabled:
+        logger.info("Root orchestrator disabled in config")
+        return None
+    try:
+        root_terminal = terminal_service.create_terminal(
+            provider=cfg.provider,
+            agent_profile=cfg.profile,
+            session_name=cfg.session,
+            new_session=True,
+            send_system_prompt=True,
+            working_directory=str(Path.home()),
+            env_vars={"CAO_HOOKS_ENABLED": "0"},
+            bare=True,
+        )
+        logger.info("Root orchestrator started: %s (provider=%s, session=%s)",
+                     root_terminal.id, cfg.provider, cfg.session)
+        return root_terminal.id
+    except Exception as e:
+        logger.warning("Root orchestrator start failed (non-fatal): %s", e)
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
@@ -140,7 +176,19 @@ async def lifespan(app: FastAPI):
     inbox_observer.start()
     logger.info("Inbox watcher started (PollingObserver)")
 
+    # Start Root Orchestrator (persistent background agent for Hub tasks)
+    root_tid = await asyncio.to_thread(_start_root_orchestrator)
+    app.state.root_terminal_id = root_tid
+
     yield
+
+    # Shutdown: cleanup Root Orchestrator
+    if getattr(app.state, "root_terminal_id", None):
+        try:
+            terminal_service.delete_terminal(app.state.root_terminal_id)
+            logger.info("Root orchestrator stopped")
+        except Exception:
+            pass
 
     # Stop inbox observer
     inbox_observer.stop()
@@ -455,10 +503,25 @@ async def get_terminal_working_directory(terminal_id: TerminalId) -> WorkingDire
         )
 
 
+class TerminalInputRequest(BaseModel):
+    message: str = Field(description="Message to send to the terminal")
+
+
 @app.post("/terminals/{terminal_id}/input")
-async def send_terminal_input(terminal_id: TerminalId, message: str) -> Dict:
+async def send_terminal_input(
+    terminal_id: TerminalId,
+    body: Optional[TerminalInputRequest] = Body(default=None),
+    message: Optional[str] = Query(default=None, description="Message (query param, for backward compat)"),
+) -> Dict:
+    # JSON body takes precedence over query param
+    msg = (body.message if body else None) or message
+    if not msg:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide 'message' in JSON body or query parameter",
+        )
     try:
-        success = terminal_service.send_input(terminal_id, message)
+        success = terminal_service.send_input(terminal_id, msg)
         return {"success": success}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

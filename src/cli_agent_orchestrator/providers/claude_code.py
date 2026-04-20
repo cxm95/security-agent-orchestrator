@@ -219,6 +219,9 @@ class ClaudeCodeProvider(BaseProvider):
         if not wait_for_shell(tmux_client, self.session_name, self.window_name, timeout=10.0):
             raise TimeoutError("Shell initialization timed out after 10 seconds")
 
+        # Apply env vars (e.g. CAO_HOOKS_ENABLED=0) before launching the CLI.
+        self._apply_env_vars()
+
         # Prevent bypass permissions dialog from appearing (settings-based fix).
         self._ensure_skip_bypass_prompt_setting()
 

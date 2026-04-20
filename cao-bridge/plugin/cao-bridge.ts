@@ -37,6 +37,7 @@ export default (async ({ client }) => {
   let lastOutput = ""
   let currentTaskId: string | null = null
   let pendingHeartbeats: Array<{ name: string; prompt: string }> = []
+  let l1Prepended = false
 
   // ── Agent-side git sync ────────────────────────────────────────────
   const GIT_REMOTE = process.env.CAO_GIT_REMOTE || ""
@@ -287,10 +288,32 @@ export default (async ({ client }) => {
       if (data.has_input) {
         awaitingResult = true
         await report("processing")
-        const task = String(data.input || "")
+        let task = String(data.input || "")
         // Extract task_id from [CAO Task ID: xxx] in the prompt
         const tidMatch = task.match(/\[CAO Task ID:\s*([^\]]+)\]/)
         currentTaskId = data.task_id || (tidMatch ? tidMatch[1].trim() : null)
+
+        // Prepend L1 knowledge index to the first task. Injecting via a
+        // separate appendPrompt at plugin init is unreliable — the TUI draft
+        // buffer is cleared when the first session is created, so the index
+        // never reaches the submitted user message. Concatenating in JS and
+        // submitting atomically guarantees the agent sees it.
+        if (!l1Prepended) {
+          l1Prepended = true
+          try {
+            const r = await fetch(HUB + "/evolution/index", { signal: AbortSignal.timeout(3000) })
+            if (r.ok) {
+              const idx = await r.text()
+              if (idx && !idx.startsWith("# Knowledge Index\n\nNo index")) {
+                task = "== Knowledge Index ==\n" + idx + "\n== End Knowledge Index ==\n\n" + task
+                dbg("L1 index prepended to first task (" + idx.length + " chars)")
+              }
+            }
+          } catch (e: any) {
+            dbg("L1 prepend fetch failed: " + (e.message || e))
+          }
+        }
+
         dbg("injecting task=" + (currentTaskId || "?") + ": " + task.substring(0, 80))
         if (terminalId) writeCachedTerminalId(terminalId)
         await client.tui.appendPrompt({ body: { text: task } })
@@ -382,6 +405,10 @@ export default (async ({ client }) => {
     writeCachedTerminalId(terminalId)
   }
 
+  // L1 knowledge index is prepended to the first task in pollAndInject —
+  // see the l1Prepended block there. Injecting via a standalone
+  // appendPrompt at startup does not survive TUI session creation.
+
   // Start periodic polling immediately (no event dependency)
   setInterval(pollAndInject, POLL_MS)
   dbg("timer started, interval=" + POLL_MS)
@@ -458,6 +485,17 @@ export default (async ({ client }) => {
 
         // ── Normal task completion → trigger grader skill ────────────
         await report("completed", lastOutput)
+
+        // Test / dry-run task → skip grader, heartbeat, and score reporting.
+        if (currentTaskId && /^(test|generic)(-.*)?$/i.test(currentTaskId)) {
+          dbg("test task " + currentTaskId + " — skipping evolution pipeline")
+          awaitingResult = false
+          lastOutput = ""
+          currentTaskId = null
+          if (terminalId) writeCachedTerminalId(terminalId)
+          await pollAndInject()
+          return
+        }
 
         if (currentTaskId) {
           try {

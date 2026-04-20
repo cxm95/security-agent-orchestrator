@@ -894,3 +894,135 @@ notes/skills 保留供 Hub 内部使用（心跳生成的笔记、WebUI）。
 **测试结果**：295/295 通过（移除 2 个过时测试）
 
 **状态**：✅ 完成
+
+---
+
+## 步骤 21：L1 记忆加载 + Root Orchestrator + YAML 配置
+
+**目标**：实现 L1 Insight Index（知识索引）自动构建与注入机制，使 Agent 在会话启动时自动获取共享知识摘要。
+
+### 21.1 Root Orchestrator
+
+Hub 端常驻后台 Agent，随 Hub 启动/关闭自动管理：
+
+- `agent_store/root_orchestrator.md` — Agent Profile（L1 Index Builder 指令）
+- `api/main.py` — `_start_root_orchestrator()` 在 lifespan 中创建/销毁
+- 通过 inbox 消息接收 `rebuild-index: [files]` 任务
+- 读取 `.cao-evolution/notes/` 生成 `.cao-evolution/index.md`（≤1500 tokens）
+
+### 21.2 YAML 配置
+
+- `config.py` — 新增 YAML 配置加载器（`~/.aws/cli-agent-orchestrator/config.yaml`）
+- 支持 `CAO_CONFIG` 环境变量覆盖路径
+- 可配置项：`root_orchestrator.{enabled, provider, profile, session}`
+- 默认值：provider=`clother_closeai`, session=`ROOT`
+
+### 21.3 Clother CloseAI Provider
+
+- `providers/clother_closeai.py` — 新增 provider（继承 ClaudeCodeProvider）
+- `providers/clother_minimax_cn.py` — 修复：`--dangerously-skip-permissions` → `--yolo`
+- `models/provider.py` — 新增 `CLOTHER_CLOSEAI` 枚举值
+- `providers/manager.py` — 注册新 provider 到工厂
+
+### 21.4 L1 Index API 端点
+
+- `GET /evolution/index` — 返回 index.md 内容（PlainTextResponse）
+- `POST /evolution/index/rebuild` — 手动触发 index 重建
+- **关键修复**：将路由移至 `/{task_id}` 通配路由之前，避免路径冲突
+
+### 21.5 Checkpoint → Index 重建通知
+
+- `_on_checkpoint_commit()` — 当 notes 变更时自动通知 Root Orchestrator
+- `_notify_root_rebuild_index()` — 通过 inbox message 触发重建
+
+### 21.6 Bridge 端 L1 Index 注入
+
+- `cao-session-start.sh` — Claude Code SessionStart hook 注入 L1 index
+- `cao-bridge.ts` — OpenCode plugin init 注入 L1 index
+- 两端均包裹在 `== Knowledge Index ==` 标记中
+
+### 21.7 Bug 修复
+
+1. **路由冲突**：`GET /evolution/index` 被 `GET /evolution/{task_id}` 拦截 → 移至前方
+2. **Bash 占位符检测**：`cao-session-start.sh` 中 `!= "# Knowledge Index"` 误判多行默认文本 → 改用 `grep -q "No index available yet"`
+3. **fastmcp API 变更**：`get_tools()` → `list_tools()`，dict → list（3.2.3 升级导致）
+
+### 21.8 新增测试（23 个）
+
+- `test_l1_memory.py`：
+  - TestConfigLoader (5) — defaults, custom yaml, partial, invalid, empty
+  - TestClotherProviders (5) — yolo flag, enum, manager factory
+  - TestL1IndexRoutes (4) — get default, get content, rebuild no-root, rebuild with-root
+  - TestCheckpointNotification (4) — notify on notes, skip no-root, trigger on commit, skip non-notes
+  - TestRootOrchestratorProfile (2) — loadable, no mcp
+  - TestRootOrchestratorLifecycle (3) — disabled config, config values, failure handling
+
+**测试结果**：350/350 通过（新增 23 个测试）
+
+### 21.9 Bug 修复 — L1 运行时流程审查
+
+通过端到端 runtime flow trace 发现并修复 3 个关键问题：
+
+1. **Root Orchestrator 路径错误**：`root_orchestrator.md` 使用相对路径 `.cao-evolution/notes/`，但 EVOLUTION_DIR 默认为 `~/.cao-evolution/`。如果 Hub CWD 不是 home 目录，Root Orch 会在错误位置查找 notes → 改为绝对路径 `~/.cao-evolution/notes/` 和 `~/.cao-evolution/index.md`
+
+2. **Root Orchestrator 工作目录未设置**：`_start_root_orchestrator()` 未传入 `working_directory`，默认为 `os.getcwd()`（Hub 的启动目录）→ 添加 `working_directory=str(Path.home())`
+
+3. **Inbox 消息永不送达（严重）**：`_notify_root_rebuild_index()` 创建 inbox 消息后未触发投递。`LogFileHandler` 仅在日志文件变化时投递。如果 Root Orch 已 IDLE（无日志输出），消息永远停留 PENDING 状态 → 在 `_notify_root_rebuild_index()` 和 `rebuild_knowledge_index()` 中添加 `inbox_service.check_and_send_pending_messages(root_tid)` 确保立即投递
+
+涉及文件：
+- `agent_store/root_orchestrator.md` — 路径修复
+- `api/main.py` — working_directory 修复
+- `api/evolution_routes.py` — 添加 asyncio/inbox_service 导入，两处添加即时投递
+- `test/evolution/test_l1_memory.py` — 3 个测试更新（验证修复）
+
+### 21.10 L1 端到端验证
+
+- `experiment/test_l1_flow.sh` — 8 步自动化 E2E 验证脚本
+  - 支持 `--no-hub`（使用已运行 Hub）和 `--verbose` 模式
+  - 验证：Hub → Root Orch → API → notes → rebuild → index → SessionStart 注入
+  - 自动清理测试 notes
+- `experiment/README.md` — 新增步骤 9（L1 Knowledge Index E2E 验证），含手动分步调试
+
+**状态**：✅ 完成
+
+---
+
+### 21.11 SDK 支持 + Hook 隔离 + env_vars 修复
+
+**目标**：支持基于 SDK（Claude Agent SDK / OpenCode SDK）的 Agent 接入 CAO，修复 Root Orchestrator 触发全局 hook 的循环注册问题。
+
+#### Root Orchestrator Hook 隔离
+
+发现 `clother-closeai` 会读取 `~/.claude/settings.json` 中全局安装的 SessionStart/Stop hooks，导致 Root Orchestrator 自己注册到 Hub 形成循环依赖。
+
+**双重保护**：
+1. `--bare` 标志 — provider 层跳过 hooks、plugins、CLAUDE.md
+2. `CAO_HOOKS_ENABLED=0` 环境变量 — Bash hook 层检查并提前退出
+
+涉及文件：
+- `providers/clother_closeai.py` — 新增 `bare` 参数，`--yolo --bare`
+- `providers/clother_minimax_cn.py` — 同步添加 `bare` 参数支持
+- `providers/claude_code.py` — **关键修复**：`initialize()` 添加 `self._apply_env_vars()` 调用（之前 env_vars 在 ClaudeCode 系列 provider 中从未应用到 tmux）
+- `providers/manager.py` — `create_provider()` 新增 `bare` 参数，传递给 Clother 系列 provider
+- `services/terminal_service.py` — `create_terminal()` 新增 `env_vars` 和 `bare` 参数
+- `api/main.py` — `_start_root_orchestrator()` 传入 `env_vars={"CAO_HOOKS_ENABLED": "0"}, bare=True`
+
+#### SDK Lifecycle 支持
+
+- `cao-bridge/sdk/lifecycle.py` — `CaoAgentLifecycle` 类：start/stop/build_context/fetch_index
+- `cao-bridge/sdk/example_claude_sdk.py` — Claude Agent SDK 集成示例
+- `cao-bridge/sdk/example_opencode_sdk.py` — OpenCode SDK 集成示例
+- `cao-bridge/cao_bridge.py` — 新增 `fetch_index()` 方法（`GET /evolution/index`）
+
+#### Bug 修复
+
+1. **env_vars 未应用（严重）**：`ClaudeCodeProvider.initialize()` 从不调用 `_apply_env_vars()`，导致 `CAO_HOOKS_ENABLED=0` 无法到达 tmux 环境。修复：在 `initialize()` 的 shell ready 检查后添加 `self._apply_env_vars()`。
+
+#### 测试
+
+- `cao-bridge/sdk/test_sdk_lifecycle.py` — 3 个 E2E 测试（fetch_index / lifecycle / reattach）
+- `test/evolution/test_l1_memory.py` — 更新 `test_start_uses_config_values` 验证新参数
+
+**测试结果**：350/350 通过，SDK E2E 3/3 通过
+
+**状态**：✅ 完成

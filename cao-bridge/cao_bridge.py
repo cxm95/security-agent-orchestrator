@@ -200,7 +200,8 @@ class CaoBridge:
 
     def report_score(self, task_id: str, score: Optional[float],
                      title: str = "", feedback: str = "",
-                     agent_profile: str = "", batch: str = "") -> dict:
+                     agent_profile: str = "", batch: str = "",
+                     evolution_signals: Optional[dict] = None) -> dict:
         """Report an evaluation score to the Hub."""
         agent_id = self.terminal_id or "anonymous"
         body: dict = {"agent_id": agent_id, "score": score,
@@ -209,6 +210,8 @@ class CaoBridge:
             body["agent_profile"] = agent_profile
         if batch:
             body["batch"] = batch
+        if evolution_signals:
+            body["evolution_signals"] = evolution_signals
         resp = requests.post(
             f"{self.hub_url}/evolution/{task_id}/scores",
             json=body,
@@ -260,6 +263,22 @@ class CaoBridge:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def fetch_index(self) -> str:
+        """Fetch L1 knowledge index from Hub.
+
+        Returns the index content, or empty string if no index is available.
+        SDK-based agents use this to inject knowledge context at session start.
+        """
+        resp = requests.get(
+            f"{self.hub_url}/evolution/index",
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        text = resp.text
+        if "No index available yet" in text:
+            return ""
+        return text
 
     # ── Task management (remote agent can create/update tasks) ────────
 

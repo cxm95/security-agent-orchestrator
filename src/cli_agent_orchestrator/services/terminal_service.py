@@ -64,12 +64,21 @@ def create_terminal(
     display_name: Optional[str] = None,
     send_system_prompt: bool = True,
     initial_prompt: Optional[str] = None,
+    env_vars: Optional[Dict[str, str]] = None,
+    bare: bool = False,
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
     For remote providers, no tmux session is created — all I/O goes through
     the DB-backed RemoteProvider.  For local providers, the full tmux
     workflow is used.
+
+    Args:
+        env_vars: Extra environment variables to set in the tmux pane before
+                  the provider CLI launches.
+        bare: When True, pass --bare to providers that support it (skips hooks,
+              plugins, CLAUDE.md).  Used for Hub-internal agents like Root
+              Orchestrator that must not trigger CAO bridge hooks.
     """
     try:
         terminal_id = generate_terminal_id()
@@ -131,7 +140,8 @@ def create_terminal(
         # Step 4: Create and initialize the CLI provider
         # This starts the agent (e.g., runs "kiro-cli chat --agent developer")
         provider_instance = provider_manager.create_provider(
-            provider, terminal_id, session_name, window_name, agent_profile
+            provider, terminal_id, session_name, window_name, agent_profile,
+            env_vars=env_vars, bare=bare,
         )
 
         # Step 4.1: Inject CAO_TERMINAL_ID for script provider so child MCP

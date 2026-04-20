@@ -7,6 +7,7 @@ from cli_agent_orchestrator.clients.database import get_terminal_metadata
 from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.providers.base import BaseProvider
 from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+from cli_agent_orchestrator.providers.clother_closeai import ClotherCloseaiProvider
 from cli_agent_orchestrator.providers.clother_minimax_cn import ClotherMinimaxCnProvider
 from cli_agent_orchestrator.providers.codex import CodexProvider
 from cli_agent_orchestrator.providers.copilot_cli import CopilotCliProvider
@@ -30,6 +31,7 @@ class ProviderManager:
         tmux_window: str,
         agent_profile: Optional[str] = None,
         env_vars: Optional[Dict[str, str]] = None,
+        bare: bool = False,
     ) -> BaseProvider:
         """Create and store provider instance.
 
@@ -40,6 +42,7 @@ class ProviderManager:
             tmux_window: Tmux window name.
             agent_profile: Optional agent profile name.
             env_vars: Optional environment variables to set before CLI launch.
+            bare: When True, pass --bare to providers that support it.
         """
         try:
             provider: BaseProvider
@@ -52,7 +55,9 @@ class ProviderManager:
             elif provider_type == ProviderType.OPENCODE.value:
                 provider = OpenCodeProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             elif provider_type == ProviderType.CLOTHER_MINIMAX_CN.value:
-                provider = ClotherMinimaxCnProvider(terminal_id, tmux_session, tmux_window, agent_profile)
+                provider = ClotherMinimaxCnProvider(terminal_id, tmux_session, tmux_window, agent_profile, bare=bare)
+            elif provider_type == ProviderType.CLOTHER_CLOSEAI.value:
+                provider = ClotherCloseaiProvider(terminal_id, tmux_session, tmux_window, agent_profile, bare=bare)
             elif provider_type == ProviderType.REMOTE.value:
                 provider = RemoteProvider(terminal_id, tmux_session, tmux_window, agent_profile)
             else:

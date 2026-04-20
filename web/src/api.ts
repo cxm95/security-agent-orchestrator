@@ -199,7 +199,11 @@ export const api = {
   getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full') =>
     fetchJSON<{ output: string; mode: string }>(`/terminals/${id}/output?mode=${mode}`),
   sendInput: (id: string, message: string) =>
-    fetchJSON<{ success: boolean }>(`/terminals/${id}/input?message=${encodeURIComponent(message)}`, { method: 'POST' }),
+    fetchJSON<{ success: boolean }>(`/terminals/${id}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    }),
   exitTerminal: (id: string) =>
     fetchJSON<{ success: boolean }>(`/terminals/${id}/exit`, { method: 'POST' }),
   deleteTerminal: (id: string) => fetchJSON<{ success: boolean }>(`/terminals/${id}`, { method: 'DELETE' }),
@@ -231,7 +235,8 @@ export const api = {
   // Evolution
   listTasks: () => fetchJSON<EvolutionTask[]>('/evolution/tasks'),
   getLeaderboard: (taskId: string, topN = 20) =>
-    fetchJSON<EvolutionAttempt[]>(`/evolution/${taskId}/leaderboard?top_n=${topN}`),
+    fetchJSON<{ entries: EvolutionAttempt[] }>(`/evolution/${taskId}/leaderboard?top_n=${topN}`)
+      .then(r => r.entries),
   getAttempts: (taskId: string) =>
     fetchJSON<EvolutionAttempt[]>(`/evolution/${taskId}/attempts`),
   listNotes: (tags = '') =>
