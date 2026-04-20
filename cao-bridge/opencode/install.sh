@@ -19,7 +19,7 @@ CAO_BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$CAO_BRIDGE_DIR/.." && pwd)"
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 
-PLUGIN_SRC="$CAO_BRIDGE_DIR/plugin/cao-bridge.ts"
+PLUGIN_SRC="$SCRIPT_DIR/plugin/cao-bridge.ts"
 SKILLS_SRC="$REPO_ROOT/experiment/skill_to_install_remote"
 
 # ── Helpers ──────────────────────────────────────────────────────────────

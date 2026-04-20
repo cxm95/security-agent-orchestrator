@@ -41,7 +41,7 @@ export default (async ({ client }) => {
 
   // ── Agent-side git sync ────────────────────────────────────────────
   const GIT_REMOTE = process.env.CAO_GIT_REMOTE || ""
-  const SCRIPT_DIR = __dirname + "/.."  // cao-bridge/ directory
+  const SCRIPT_DIR = __dirname + "/.."  // parent of installed plugin dir; passed as _CAO_SCRIPT_DIR to python subprocess
   let CLIENT_DIR = process.env.CAO_CLIENT_DIR || ""
 
   function initSession(): string {
