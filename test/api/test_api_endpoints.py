@@ -754,7 +754,7 @@ class TestLifespan:
             ),
             patch(
                 "cli_agent_orchestrator.api.main.flow_daemon",
-                return_value=asyncio.sleep(0),
+                new_callable=AsyncMock,
             ),
         ):
             async with lifespan(app):
@@ -779,7 +779,7 @@ class TestMainEntryPoint:
             patch("argparse.ArgumentParser.parse_args") as mock_args,
             patch("uvicorn.run") as mock_uvicorn,
         ):
-            mock_args.return_value = MagicMock(agents_dir=None, host=None, port=None)
+            mock_args.return_value = MagicMock(agents_dir=None, host=None, port=None, fresh=False)
 
             from cli_agent_orchestrator.api.main import main
 
@@ -796,7 +796,7 @@ class TestMainEntryPoint:
             patch("argparse.ArgumentParser.parse_args") as mock_args,
             patch("uvicorn.run") as mock_uvicorn,
         ):
-            mock_args.return_value = MagicMock(agents_dir=None, host="0.0.0.0", port=9999)
+            mock_args.return_value = MagicMock(agents_dir=None, host="0.0.0.0", port=9999, fresh=False)
 
             from cli_agent_orchestrator.api.main import main
 
@@ -811,7 +811,7 @@ class TestMainEntryPoint:
             patch("uvicorn.run"),
             patch("cli_agent_orchestrator.constants.KIRO_AGENTS_DIR") as _,
         ):
-            mock_args.return_value = MagicMock(agents_dir="/custom/agents", host=None, port=None)
+            mock_args.return_value = MagicMock(agents_dir="/custom/agents", host=None, port=None, fresh=False)
 
             from cli_agent_orchestrator.api.main import main
 
