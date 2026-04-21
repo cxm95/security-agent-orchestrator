@@ -18,7 +18,7 @@ class TestHandoffMessageContext:
     @patch("cli_agent_orchestrator.mcp_server.server._create_terminal")
     def test_all_providers_get_handoff_context(self, mock_create, mock_wait, mock_send, _):
         """All providers should receive [CAO Handoff] prefix."""
-        for provider_name in ("codex", "opencode", "claude_code", "kiro_cli"):
+        for provider_name in ("codex", "opencode", "claude_code", "claude_code"):
             mock_send.reset_mock()
             mock_create.return_value = ("dev-terminal-1", provider_name)
             mock_wait.side_effect = [True, True]

@@ -190,7 +190,7 @@ def test_launch_workspace_confirmation_skipped_with_yolo_flag():
 
 
 def test_launch_workspace_confirmation_for_default_provider():
-    """Test that default provider (kiro_cli) also triggers workspace confirmation."""
+    """Test that default provider (claude_code) also triggers workspace confirmation."""
     runner = CliRunner()
 
     with (
@@ -203,9 +203,9 @@ def test_launch_workspace_confirmation_for_default_provider():
         }
         mock_post.return_value.raise_for_status.return_value = None
 
-        # Default provider is kiro_cli, which requires workspace confirmation
+        # Default provider is claude_code, which requires workspace confirmation
         result = runner.invoke(launch, ["--agents", "test-agent", "--headless"], input="y\n")
 
         assert result.exit_code == 0
-        assert "provider (kiro_cli) will be trusted to perform all actions" in result.output
+        assert "provider (claude_code) will be trusted to perform all actions" in result.output
         assert "Do you trust all the actions in this folder?" in result.output

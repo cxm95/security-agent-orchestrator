@@ -38,7 +38,7 @@ class TestCreateTerminalCleanup:
 
         with pytest.raises(Exception, match="Provider init failed"):
             create_terminal(
-                provider="kiro_cli",
+                provider="claude_code",
                 agent_profile="dev",
                 session_name="test-ses",
                 new_session=True,
@@ -73,7 +73,7 @@ class TestCreateTerminalCleanup:
 
         with pytest.raises(Exception):
             create_terminal(
-                provider="kiro_cli",
+                provider="claude_code",
                 agent_profile="dev",
                 session_name="cao-existing",
                 new_session=False,
@@ -110,7 +110,7 @@ class TestCreateTerminalCleanup:
 
         with pytest.raises(Exception, match="original error"):
             create_terminal(
-                provider="kiro_cli",
+                provider="claude_code",
                 agent_profile="dev",
                 session_name="test-ses",
                 new_session=True,
@@ -140,7 +140,7 @@ class TestCreateTerminalCleanup:
         mock_log_dir.__truediv__ = MagicMock(return_value=MagicMock())
 
         result = create_terminal(
-            provider="kiro_cli",
+            provider="claude_code",
             agent_profile="dev",
             session_name="myses",
             new_session=True,
@@ -162,7 +162,7 @@ class TestDeleteTerminal:
         """Delete should stop pipe-pane, kill window, cleanup provider, delete DB record."""
         from cli_agent_orchestrator.services.terminal_service import delete_terminal
 
-        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win"}
+        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win", "provider": "claude_code"}
 
         result = delete_terminal("tid1")
 
@@ -181,7 +181,7 @@ class TestDeleteTerminal:
         """Pipe-pane failure should be logged and not block deletion."""
         from cli_agent_orchestrator.services.terminal_service import delete_terminal
 
-        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win"}
+        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win", "provider": "claude_code"}
         mock_tmux.stop_pipe_pane.side_effect = Exception("pipe error")
 
         result = delete_terminal("tid1")
@@ -199,7 +199,7 @@ class TestDeleteTerminal:
         """Kill-window failure should be logged and not block deletion."""
         from cli_agent_orchestrator.services.terminal_service import delete_terminal
 
-        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win"}
+        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win", "provider": "claude_code"}
         mock_tmux.kill_window.side_effect = Exception("kill error")
 
         result = delete_terminal("tid1")
@@ -215,7 +215,7 @@ class TestDeleteTerminal:
         """DB delete failure should propagate."""
         from cli_agent_orchestrator.services.terminal_service import delete_terminal
 
-        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win"}
+        mock_meta.return_value = {"tmux_session": "ses", "tmux_window": "win", "provider": "claude_code"}
         mock_db_del.side_effect = Exception("DB error")
 
         with pytest.raises(Exception, match="DB error"):

@@ -208,9 +208,9 @@ class TestListAgentProfiles:
             "/home/user/.aws/cli-agent-orchestrator/agent-store"
         )
 
-        # Setup provider dirs: kiro_cli dir with a third profile
+        # Setup provider dirs: claude_code dir with a third profile
         mock_get_agent_dirs.return_value = {
-            "kiro_cli": "/home/user/.kiro/agents",
+            "claude_code": "/home/user/.claude/agents",
         }
 
         def fake_scan(directory, source_label, profiles):
@@ -220,22 +220,22 @@ class TestListAgentProfiles:
                     "description": "A local agent",
                     "source": "local",
                 }
-            elif source_label == "kiro":
-                profiles["kiro-agent"] = {
-                    "name": "kiro-agent",
-                    "description": "A Kiro agent",
-                    "source": "kiro",
+            elif source_label == "claude_code":
+                profiles["claude-agent"] = {
+                    "name": "claude-agent",
+                    "description": "A Claude agent",
+                    "source": "claude_code",
                 }
 
         mock_scan.side_effect = fake_scan
 
         result = list_agent_profiles()
 
-        # Should have built-in + local + kiro profiles
+        # Should have built-in + local + provider profiles
         names = [p["name"] for p in result]
         assert "builtin-agent" in names
         assert "local-agent" in names
-        assert "kiro-agent" in names
+        assert "claude-agent" in names
 
     @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
     @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})

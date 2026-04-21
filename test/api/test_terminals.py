@@ -75,14 +75,14 @@ class TestSessionCreationWithWorkingDirectory:
                 id="abcd1234",
                 name="test-window",
                 session_name="test-session",
-                provider="q_cli",
+                provider="codex",
                 agent_profile="developer",
             )
 
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "q_cli",
+                    "provider": "codex",
                     "agent_profile": "developer",
                     "working_directory": str(tmp_path),
                 },
@@ -100,14 +100,14 @@ class TestSessionCreationWithWorkingDirectory:
                 id="abcd1234",
                 name="test-window",
                 session_name="test-session",
-                provider="q_cli",
+                provider="codex",
                 agent_profile="developer",
             )
 
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "q_cli",
+                    "provider": "codex",
                     "agent_profile": "developer",
                     "working_directory": "/custom/path",
                 },
@@ -134,14 +134,14 @@ class TestTerminalCreationWithWorkingDirectory:
                 id="abcd5678",
                 name="test-window",
                 session_name="test-session",
-                provider="q_cli",
+                provider="codex",
                 agent_profile="analyst",
             )
 
             response = client.post(
                 "/sessions/test-session/terminals",
                 params={
-                    "provider": "q_cli",
+                    "provider": "codex",
                     "agent_profile": "analyst",
                     "working_directory": str(tmp_path),
                 },
@@ -164,14 +164,14 @@ class TestTerminalCreationWithWorkingDirectory:
                 id="abcd5678",
                 name="test-window",
                 session_name="test-session",
-                provider="q_cli",
+                provider="codex",
                 agent_profile="analyst",
             )
 
             response = client.post(
                 "/sessions/test-session/terminals",
                 params={
-                    "provider": "q_cli",
+                    "provider": "codex",
                     "agent_profile": "analyst",
                     "working_directory": "/session/path",
                 },
@@ -448,14 +448,14 @@ class TestCrossProviderResolution:
             response = client.post(
                 "/sessions/test-session/terminals",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "developer",
                 },
             )
 
             assert response.status_code == 201
             # Verify resolve_provider was called with the fallback
-            mock_resolve.assert_called_once_with("developer", fallback_provider="kiro_cli")
+            mock_resolve.assert_called_once_with("developer", fallback_provider="claude_code")
             # Verify terminal_service got the resolved provider
             call_kwargs = mock_svc.create_terminal.call_args.kwargs
             assert call_kwargs["provider"] == "claude_code"
@@ -467,26 +467,26 @@ class TestCrossProviderResolution:
             patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc,
         ):
             # resolve_provider returns the fallback (no profile provider key)
-            mock_resolve.return_value = "kiro_cli"
+            mock_resolve.return_value = "claude_code"
             mock_svc.create_terminal.return_value = Terminal(
                 id="abcd5678",
                 name="test-window",
                 session_name="test-session",
-                provider="kiro_cli",
+                provider="claude_code",
                 agent_profile="reviewer",
             )
 
             response = client.post(
                 "/sessions/test-session/terminals",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "reviewer",
                 },
             )
 
             assert response.status_code == 201
             call_kwargs = mock_svc.create_terminal.call_args.kwargs
-            assert call_kwargs["provider"] == "kiro_cli"
+            assert call_kwargs["provider"] == "claude_code"
 
     def test_create_session_does_not_resolve_provider(self, client):
         """create_session should NOT call resolve_provider — CLI flag is the override."""
@@ -498,14 +498,14 @@ class TestCrossProviderResolution:
                 id="abcd1234",
                 name="test-window",
                 session_name="test-session",
-                provider="kiro_cli",
+                provider="claude_code",
                 agent_profile="supervisor",
             )
 
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "supervisor",
                 },
             )
@@ -515,7 +515,7 @@ class TestCrossProviderResolution:
             mock_resolve.assert_not_called()
             # terminal_service should get the raw provider param
             call_kwargs = mock_svc.create_terminal.call_args.kwargs
-            assert call_kwargs["provider"] == "kiro_cli"
+            assert call_kwargs["provider"] == "claude_code"
 
     def test_create_terminal_returns_500_on_resolve_error(self, client):
         """Internal errors during provider resolution should return 500."""
@@ -528,7 +528,7 @@ class TestCrossProviderResolution:
             response = client.post(
                 "/sessions/test-session/terminals",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "developer",
                 },
             )

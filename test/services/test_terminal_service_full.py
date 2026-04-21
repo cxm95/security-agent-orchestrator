@@ -47,7 +47,7 @@ class TestCreateTerminal:
         mock_log_path = MagicMock()
         mock_log_dir.__truediv__.return_value = mock_log_path
 
-        result = create_terminal("kiro_cli", "developer", new_session=True)
+        result = create_terminal("claude_code", "developer", new_session=True)
 
         assert result.id == "test1234"
         mock_tmux.create_session.assert_called_once()
@@ -81,7 +81,7 @@ class TestCreateTerminal:
         mock_log_path = MagicMock()
         mock_log_dir.__truediv__.return_value = mock_log_path
 
-        result = create_terminal("kiro_cli", "developer", session_name="cao-existing")
+        result = create_terminal("claude_code", "developer", session_name="cao-existing")
 
         assert result.id == "test1234"
         mock_tmux.create_window.assert_called_once()
@@ -100,7 +100,7 @@ class TestCreateTerminal:
         mock_tmux.session_exists.return_value = False
 
         with pytest.raises(ValueError, match="not found"):
-            create_terminal("kiro_cli", "developer", session_name="cao-nonexistent")
+            create_terminal("claude_code", "developer", session_name="cao-nonexistent")
 
     @patch("cli_agent_orchestrator.services.terminal_service.tmux_client")
     @patch("cli_agent_orchestrator.services.terminal_service.generate_window_name")
@@ -116,7 +116,7 @@ class TestCreateTerminal:
         mock_tmux.session_exists.return_value = True
 
         with pytest.raises(ValueError, match="already exists"):
-            create_terminal("kiro_cli", "developer", session_name="cao-existing", new_session=True)
+            create_terminal("claude_code", "developer", session_name="cao-existing", new_session=True)
 
 
 class TestGetTerminal:
@@ -129,7 +129,7 @@ class TestGetTerminal:
         mock_get_metadata.return_value = {
             "id": "test1234",
             "tmux_window": "developer-abcd",
-            "provider": "kiro_cli",
+            "provider": "claude_code",
             "tmux_session": "cao-session",
             "agent_profile": "developer",
             "last_active": datetime.now(),
@@ -158,7 +158,7 @@ class TestGetTerminal:
         mock_get_metadata.return_value = {
             "id": "test1234",
             "tmux_window": "developer-abcd",
-            "provider": "kiro_cli",
+            "provider": "claude_code",
             "tmux_session": "cao-session",
             "agent_profile": "developer",
             "last_active": datetime.now(),
@@ -179,6 +179,7 @@ class TestGetWorkingDirectory:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_tmux.get_pane_working_directory.return_value = "/home/user/project"
 
@@ -207,6 +208,7 @@ class TestSendInput:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_provider = mock_pm.get_provider.return_value
         mock_provider.paste_enter_count = 2
@@ -238,6 +240,7 @@ class TestGetOutput:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_tmux.get_history.return_value = "full terminal output"
 
@@ -253,6 +256,7 @@ class TestGetOutput:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_tmux.get_history.return_value = "full terminal output"
         mock_provider = MagicMock()
@@ -279,6 +283,7 @@ class TestGetOutput:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_tmux.get_history.return_value = "full output"
         mock_provider_manager.get_provider.return_value = None
@@ -301,6 +306,7 @@ class TestDeleteTerminal:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_db_delete.return_value = True
 
@@ -321,6 +327,7 @@ class TestDeleteTerminal:
         mock_get_metadata.return_value = {
             "tmux_session": "cao-session",
             "tmux_window": "developer-abcd",
+            "provider": "claude_code",
         }
         mock_tmux.stop_pipe_pane.side_effect = Exception("Pipe error")
         mock_db_delete.return_value = True

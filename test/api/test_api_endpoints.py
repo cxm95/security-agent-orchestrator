@@ -93,16 +93,13 @@ class TestAgentProviders:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 8
+        assert len(data) == 5
         names = [p["name"] for p in data]
-        assert "kiro_cli" in names
         assert "claude_code" in names
-        assert "q_cli" in names
         assert "codex" in names
         assert "opencode" in names
         assert "copilot_cli" in names
-        assert "gemini_cli" in names
-        assert "kimi_cli" in names
+        assert "clother_minimax_cn" in names
         for p in data:
             assert p["installed"] is True
 
@@ -120,7 +117,7 @@ class TestAgentProviders:
         """GET /agents/providers returns mixed installation status."""
 
         def mock_which(binary):
-            return "/usr/bin/kiro-cli" if binary == "kiro-cli" else None
+            return "/usr/bin/claude" if binary == "claude" else None
 
         with patch("shutil.which", side_effect=mock_which):
             response = client.get("/agents/providers")
@@ -128,10 +125,10 @@ class TestAgentProviders:
         assert response.status_code == 200
         data = response.json()
         providers_dict = {p["name"]: p for p in data}
-        assert providers_dict["kiro_cli"]["installed"] is True
-        assert providers_dict["claude_code"]["installed"] is False
-        assert providers_dict["q_cli"]["installed"] is False
+        assert providers_dict["claude_code"]["installed"] is True
         assert providers_dict["codex"]["installed"] is False
+        assert providers_dict["opencode"]["installed"] is False
+        assert providers_dict["copilot_cli"]["installed"] is False
 
     def test_list_providers_has_binary_field(self, client):
         """Each provider entry has correct binary name."""
@@ -140,10 +137,10 @@ class TestAgentProviders:
 
         data = response.json()
         providers_dict = {p["name"]: p for p in data}
-        assert providers_dict["kiro_cli"]["binary"] == "kiro-cli"
         assert providers_dict["claude_code"]["binary"] == "claude"
-        assert providers_dict["q_cli"]["binary"] == "q"
         assert providers_dict["codex"]["binary"] == "codex"
+        assert providers_dict["opencode"]["binary"] == "opencode"
+        assert providers_dict["copilot_cli"]["binary"] == "copilot"
 
 
 # ── Sessions CRUD ────────────────────────────────────────────────────
@@ -158,7 +155,7 @@ class TestCreateSession:
             id="abcd1234",
             name="test-window",
             session_name="test-session",
-            provider="kiro_cli",
+            provider="claude_code",
             agent_profile="developer",
         )
         with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
@@ -167,7 +164,7 @@ class TestCreateSession:
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "developer",
                 },
             )
@@ -175,7 +172,7 @@ class TestCreateSession:
         assert response.status_code == 201
         data = response.json()
         assert data["id"] == "abcd1234"
-        assert data["provider"] == "kiro_cli"
+        assert data["provider"] == "claude_code"
         assert data["agent_profile"] == "developer"
 
     def test_create_session_with_session_name(self, client):
@@ -184,7 +181,7 @@ class TestCreateSession:
             id="abcd1234",
             name="test-window",
             session_name="my-custom-session",
-            provider="q_cli",
+            provider="codex",
             agent_profile="developer",
         )
         with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
@@ -193,7 +190,7 @@ class TestCreateSession:
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "q_cli",
+                    "provider": "codex",
                     "agent_profile": "developer",
                     "session_name": "my-custom-session",
                 },
@@ -228,7 +225,7 @@ class TestCreateSession:
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "developer",
                 },
             )
@@ -398,7 +395,7 @@ class TestCreateTerminalInSession:
             response = client.post(
                 "/sessions/nonexistent/terminals",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "developer",
                 },
             )
@@ -414,7 +411,7 @@ class TestCreateTerminalInSession:
             response = client.post(
                 "/sessions/test-session/terminals",
                 params={
-                    "provider": "kiro_cli",
+                    "provider": "claude_code",
                     "agent_profile": "developer",
                 },
             )
@@ -429,7 +426,7 @@ class TestListTerminalsInSession:
     def test_list_terminals_success(self, client):
         """GET /sessions/{name}/terminals returns terminal list."""
         mock_terminals = [
-            {"id": "abcd1234", "tmux_session": "s1", "provider": "kiro_cli"},
+            {"id": "abcd1234", "tmux_session": "s1", "provider": "claude_code"},
             {"id": "abcd5678", "tmux_session": "s1", "provider": "claude_code"},
         ]
         with patch(
@@ -477,7 +474,7 @@ class TestGetTerminal:
             "id": "abcd1234",
             "name": "test-window",
             "session_name": "test-session",
-            "provider": "kiro_cli",
+            "provider": "claude_code",
             "agent_profile": "developer",
         }
         with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
@@ -488,7 +485,7 @@ class TestGetTerminal:
         assert response.status_code == 200
         data = response.json()
         assert data["id"] == "abcd1234"
-        assert data["provider"] == "kiro_cli"
+        assert data["provider"] == "claude_code"
         mock_svc.get_terminal.assert_called_once_with("abcd1234")
 
     def test_get_terminal_not_found(self, client):

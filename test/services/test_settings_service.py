@@ -102,15 +102,15 @@ class TestGetAgentDirs:
 
     def test_returns_saved_overrides_merged_with_defaults(self, settings_file):
         """get_agent_dirs merges saved overrides on top of defaults."""
-        custom = {"kiro_cli": "/my/custom/kiro"}
+        custom = {"claude_code": "/my/custom/claude"}
         settings_file.write_text(json.dumps({"agent_dirs": custom}))
         result = get_agent_dirs()
         # The overridden key should have the custom value
-        assert result["kiro_cli"] == "/my/custom/kiro"
+        assert result["claude_code"] == "/my/custom/claude"
         # Other defaults should be preserved
-        assert result["q_cli"] == _DEFAULTS["q_cli"]
-        assert result["claude_code"] == _DEFAULTS["claude_code"]
         assert result["codex"] == _DEFAULTS["codex"]
+        assert result["opencode"] == _DEFAULTS["opencode"]
+        assert result["cao_installed"] == _DEFAULTS["cao_installed"]
 
     def test_returns_all_default_keys(self, settings_file):
         """get_agent_dirs always returns all known provider keys."""
@@ -124,10 +124,10 @@ class TestSetAgentDirs:
 
     def test_updates_known_provider(self, settings_file):
         """set_agent_dirs updates a known provider and returns merged result."""
-        result = set_agent_dirs({"q_cli": "/new/q/path"})
-        assert result["q_cli"] == "/new/q/path"
+        result = set_agent_dirs({"codex": "/new/codex/path"})
+        assert result["codex"] == "/new/codex/path"
         # Other defaults preserved
-        assert result["kiro_cli"] == _DEFAULTS["kiro_cli"]
+        assert result["claude_code"] == _DEFAULTS["claude_code"]
 
     def test_ignores_unknown_providers(self, settings_file):
         """set_agent_dirs ignores provider names not in _DEFAULTS."""
@@ -144,16 +144,16 @@ class TestSetAgentDirs:
 
     def test_multiple_updates_accumulate(self, settings_file):
         """Successive set_agent_dirs calls accumulate overrides."""
-        set_agent_dirs({"kiro_cli": "/first"})
-        set_agent_dirs({"q_cli": "/second"})
+        set_agent_dirs({"claude_code": "/first"})
+        set_agent_dirs({"codex": "/second"})
         result = get_agent_dirs()
-        assert result["kiro_cli"] == "/first"
-        assert result["q_cli"] == "/second"
+        assert result["claude_code"] == "/first"
+        assert result["codex"] == "/second"
 
     def test_mixed_known_and_unknown_providers(self, settings_file):
         """set_agent_dirs stores known and ignores unknown in a single call."""
-        result = set_agent_dirs({"kiro_cli": "/yes", "bogus": "/no"})
-        assert result["kiro_cli"] == "/yes"
+        result = set_agent_dirs({"claude_code": "/yes", "bogus": "/no"})
+        assert result["claude_code"] == "/yes"
         assert "bogus" not in result
 
 

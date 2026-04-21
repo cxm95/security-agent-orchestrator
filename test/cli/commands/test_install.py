@@ -106,50 +106,6 @@ class TestInstallCommand:
         profile.model = None
         return profile
 
-    @patch("cli_agent_orchestrator.cli.commands.install.load_agent_profile")
-    @patch("cli_agent_orchestrator.cli.commands.install.AGENT_CONTEXT_DIR")
-    @patch("cli_agent_orchestrator.cli.commands.install.KIRO_AGENTS_DIR")
-    @patch("cli_agent_orchestrator.cli.commands.install.LOCAL_AGENT_STORE_DIR")
-    def test_install_builtin_agent_kiro_cli(
-        self,
-        mock_local_store,
-        mock_kiro_dir,
-        mock_context_dir,
-        mock_load,
-        runner,
-        mock_agent_profile,
-    ):
-        """Test installing built-in agent for kiro_cli provider."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            mock_local_store.__truediv__ = lambda self, x: tmppath / "local" / x
-            mock_local_store.exists = MagicMock(return_value=False)
-            mock_kiro_dir.__truediv__ = lambda self, x: tmppath / "kiro" / x
-            mock_kiro_dir.mkdir = MagicMock()
-            mock_context_dir.__truediv__ = lambda self, x: tmppath / "context" / x
-            mock_context_dir.mkdir = MagicMock()
-
-            mock_load.return_value = mock_agent_profile
-
-            # Create mock for resources.files
-            with patch(
-                "cli_agent_orchestrator.cli.commands.install.resources.files"
-            ) as mock_resources:
-                mock_agent_store = MagicMock()
-                mock_agent_store.__truediv__ = lambda self, x: tmppath / "builtin" / x
-                mock_resources.return_value = mock_agent_store
-
-                # Create builtin file
-                (tmppath / "builtin").mkdir(parents=True, exist_ok=True)
-                (tmppath / "builtin" / "test-agent.md").write_text("# Test\nname: test-agent")
-                (tmppath / "context").mkdir(parents=True, exist_ok=True)
-                (tmppath / "kiro").mkdir(parents=True, exist_ok=True)
-
-                result = runner.invoke(install, ["test-agent", "--provider", "kiro_cli"])
-
-                # Should not fail (may have issues with file writes in test env)
-                mock_load.assert_called_once_with("test-agent")
-
     @patch("cli_agent_orchestrator.cli.commands.install._download_agent")
     @patch("cli_agent_orchestrator.cli.commands.install.load_agent_profile")
     def test_install_from_url(self, mock_load, mock_download, runner, mock_agent_profile):
@@ -206,82 +162,6 @@ class TestInstallCommand:
 
         assert "Error" in result.output
         assert "Failed to install agent" in result.output
-
-    @patch("cli_agent_orchestrator.cli.commands.install.load_agent_profile")
-    @patch("cli_agent_orchestrator.cli.commands.install.AGENT_CONTEXT_DIR")
-    @patch("cli_agent_orchestrator.cli.commands.install.Q_AGENTS_DIR")
-    @patch("cli_agent_orchestrator.cli.commands.install.LOCAL_AGENT_STORE_DIR")
-    def test_install_q_cli_provider(
-        self, mock_local_store, mock_q_dir, mock_context_dir, mock_load, runner, mock_agent_profile
-    ):
-        """Test installing agent for q_cli provider."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            # Setup local profile to exist (covers line 99)
-            local_path = tmppath / "local"
-            local_path.mkdir(parents=True, exist_ok=True)
-            local_profile = local_path / "test-agent.md"
-            local_profile.write_text("# Test\nname: test-agent")
-
-            mock_local_store.__truediv__ = lambda self, x: local_path / x
-            mock_q_dir.__truediv__ = lambda self, x: tmppath / "q" / x
-            mock_q_dir.mkdir = MagicMock()
-            mock_context_dir.__truediv__ = lambda self, x: tmppath / "context" / x
-            mock_context_dir.mkdir = MagicMock()
-
-            mock_load.return_value = mock_agent_profile
-
-            (tmppath / "context").mkdir(parents=True, exist_ok=True)
-            (tmppath / "q").mkdir(parents=True, exist_ok=True)
-
-            result = runner.invoke(install, ["test-agent", "--provider", "q_cli"])
-
-            mock_load.assert_called_once_with("test-agent")
-
-    @patch("cli_agent_orchestrator.cli.commands.install.load_agent_profile")
-    @patch("cli_agent_orchestrator.cli.commands.install.AGENT_CONTEXT_DIR")
-    @patch("cli_agent_orchestrator.cli.commands.install.KIRO_AGENTS_DIR")
-    @patch("cli_agent_orchestrator.cli.commands.install.LOCAL_AGENT_STORE_DIR")
-    def test_install_with_mcp_servers(
-        self, mock_local_store, mock_kiro_dir, mock_context_dir, mock_load, runner
-    ):
-        """Test installing agent with MCP servers (covers lines 115-116)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            # Create profile with mcpServers
-            profile = MagicMock()
-            profile.name = "test-agent"
-            profile.description = "Test agent"
-            profile.tools = ["*"]
-            profile.allowedTools = None  # Will trigger default with MCP servers
-            profile.mcpServers = {"server1": {"command": "test"}, "server2": {"command": "test2"}}
-            profile.prompt = "Test prompt"
-            profile.toolAliases = None
-            profile.toolsSettings = None
-            profile.hooks = None
-            profile.model = None
-
-            local_path = tmppath / "local"
-            local_path.mkdir(parents=True, exist_ok=True)
-            local_profile = local_path / "test-agent.md"
-            local_profile.write_text("# Test\nname: test-agent")
-
-            mock_local_store.__truediv__ = lambda self, x: local_path / x
-            mock_kiro_dir.__truediv__ = lambda self, x: tmppath / "kiro" / x
-            mock_kiro_dir.mkdir = MagicMock()
-            mock_context_dir.__truediv__ = lambda self, x: tmppath / "context" / x
-            mock_context_dir.mkdir = MagicMock()
-
-            mock_load.return_value = profile
-
-            (tmppath / "context").mkdir(parents=True, exist_ok=True)
-            (tmppath / "kiro").mkdir(parents=True, exist_ok=True)
-
-            result = runner.invoke(install, ["test-agent", "--provider", "kiro_cli"])
-
-            mock_load.assert_called_once_with("test-agent")
 
     @patch("cli_agent_orchestrator.cli.commands.install.load_agent_profile")
     @patch("cli_agent_orchestrator.cli.commands.install.AGENT_CONTEXT_DIR")
