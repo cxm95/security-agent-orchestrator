@@ -229,7 +229,7 @@ scene.add(hubGroup);
 /* ── Agent Buildings ── */
 const agentDefs = [
   { name: 'OpenCode', bridge: 'Plugin Bridge', file: 'plugin/cao-bridge.ts', detail: 'session.idle → grader\nCAO_SCORE=0.72 正则提取', angle: -Math.PI / 6 },
-  { name: 'Hermes', bridge: 'Hermes Plugin', file: 'hermes-plugin/__init__.py', detail: 'on_session_end → git push\npre_llm_call 注入心跳', angle: Math.PI * 5 / 6 },
+  { name: 'Hermes', bridge: 'Hermes Plugin', file: 'hermes/__init__.py', detail: 'on_session_end → git push\npre_llm_call 注入心跳', angle: Math.PI * 5 / 6 },
   { name: 'Claude Code', bridge: 'CLAUDE.md + Hooks + MCP', file: 'claude-code/CLAUDE.md', detail: 'Hooks 生命周期\nMCP 配置 cao_bridge_mcp', angle: Math.PI / 2 + Math.PI / 6 },
 ];
 const agents = [];

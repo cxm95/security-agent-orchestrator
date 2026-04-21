@@ -14,7 +14,7 @@ Integrates Hermes Agent into the CAO co-evolution framework. Uses the same
 
 ```bash
 # Copy plugin to hermes plugins directory
-cp -r cao-bridge/hermes-plugin ~/.hermes/plugins/cao-evolution
+cp -r cao-bridge/hermes ~/.hermes/plugins/cao-evolution
 
 # Set git remote (required for sync)
 export CAO_GIT_REMOTE="git@github.com:org/evolution.git"  # or file:///path/to/.cao-evolution

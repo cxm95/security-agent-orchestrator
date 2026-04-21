@@ -112,7 +112,7 @@ cao-bridge/                          远程 Agent 桥接实现
 │   ├── example_claude_sdk.py        Claude Agent SDK 集成示例
 │   ├── example_opencode_sdk.py      OpenCode SDK 集成示例
 │   └── test_sdk_lifecycle.py        E2E 测试（3 tests）
-├── hermes-plugin/                   Hermes Agent 集成
+├── hermes/                   Hermes Agent 集成
 │   ├── __init__.py                  [~236行] Plugin 主逻辑（session-aware）
 │   ├── hermes-sync.sh               独立同步脚本（session-aware）
 │   └── memory_parser.py             [~46行] MEMORY.md 解析器

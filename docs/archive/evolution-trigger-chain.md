@@ -461,7 +461,7 @@ cao-bridge/
 ├── skill/                 # Skill Bridge（SKILL.md 指导式）
 ├── plugin/                # Plugin Bridge（OpenCode, Copilot）
 ├── claude-code/           # Claude Code 适配
-└── hermes-plugin/         # Hermes 适配
+└── hermes/         # Hermes 适配
 ```
 
 | Bridge | 入口文件 | Grader 触发方式 | 心跳处理方式 |
@@ -470,7 +470,7 @@ cao-bridge/
 | **Skill Bridge** | `skill/cao-bridge/SKILL.md` | Step 4: "cao_get_task → 加载 grader skill" | Step 4.5: "检查 heartbeat prompts" |
 | **Plugin Bridge** | `plugin/cao-bridge.ts` | 自动: session.idle → getTaskInfo → 注入 grader prompt → 提取 CAO_SCORE | Plugin 自动注入 heartbeat prompts |
 | **Claude Code** | `claude-code/CLAUDE.md` | 同 MCP Bridge（CLAUDE.md 列出 cao_get_task） | Hooks + MCP 配置 |
-| **Hermes** | `hermes-plugin/__init__.py` | on_end() → get_task → 排队 grader prompt → pre_llm 注入 | on_session_end push → score report → pre_llm 注入 |
+| **Hermes** | `hermes/__init__.py` | on_end() → get_task → 排队 grader prompt → pre_llm 注入 | on_session_end push → score report → pre_llm 注入 |
 
 ---
 

@@ -1065,10 +1065,10 @@ check_triggers() → reflect       report_score() 响应中携带            on_
 
 ### 8.4 Hermes Plugin 实现（cao-evolution）
 
-**目录**：`cao-bridge/hermes-plugin/`
+**目录**：`cao-bridge/hermes/`
 
 ```
-cao-bridge/hermes-plugin/
+cao-bridge/hermes/
 ├── plugin.yaml          # Hermes 插件清单
 ├── __init__.py          # register(ctx) 入口 — 复用 CaoBridge
 ├── memory_parser.py     # MEMORY.md § 解析 + SHA-256 去重
@@ -2735,9 +2735,9 @@ Agent ──push/git push─>  │  写入 + checkpoint          │
 |---|---|---|---|
 | opencode | `cao-bridge.ts` → `gitSync()` | 启动 + 每次任务完成 | `cao-bridge/plugin/cao-bridge.ts` |
 | Claude Code | `cao-session-start.sh` → `git clone/pull` | session start/stop hooks | `cao-bridge/claude-code/hooks/*.sh` |
-| hermes | `git_sync.init_client_repo()` + `pull()` | on_session_start/end | `cao-bridge/hermes-plugin/__init__.py` |
+| hermes | `git_sync.init_client_repo()` + `pull()` | on_session_start/end | `cao-bridge/hermes/__init__.py` |
 | codex/copilot | MCP `cao_sync` + `cao_pull_skills` | agent 主动调用 | `cao-bridge/cao_bridge_mcp.py` |
-| 降级/手动 | `hermes-sync.sh` | cron 或手动 | `cao-bridge/hermes-plugin/hermes-sync.sh` |
+| 降级/手动 | `hermes-sync.sh` | cron 或手动 | `cao-bridge/hermes/hermes-sync.sh` |
 
 ```
 Hub Machine                              Remote Agent Machine

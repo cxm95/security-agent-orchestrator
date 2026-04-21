@@ -94,7 +94,7 @@ Hub 顶部标注 `Hub (CAO :9889)`（大号白色带背景）和 `evolution_rout
 | Agent | Bridge 类型 | 入口文件 | 特色 | 角度 |
 |-------|-----------|---------|------|------|
 | OpenCode | Plugin Bridge | `plugin/cao-bridge.ts` | `session.idle → grader`<br>`CAO_SCORE=0.72 正则提取` | `-π/6` |
-| Hermes | Hermes Plugin | `hermes-plugin/__init__.py` | `on_session_end → git push`<br>`pre_llm_call 注入心跳` | `5π/6` |
+| Hermes | Hermes Plugin | `hermes/__init__.py` | `on_session_end → git push`<br>`pre_llm_call 注入心跳` | `5π/6` |
 | Claude Code | CLAUDE.md + Hooks + MCP | `claude-code/CLAUDE.md` | `Hooks 生命周期`<br>`MCP 配置 cao_bridge_mcp` | `π/2 + π/6` |
 
 每个 Agent 旁标注：Agent 名称（大号白色带背景）、Bridge 类型、入口文件、层名称（Bridge 接入层 / Agent LLM 核心 / 自进化层）、本地克隆目录 `~/.cao-evolution-client/`、特色说明。

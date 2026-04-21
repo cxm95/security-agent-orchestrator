@@ -1,4 +1,4 @@
-"""Tests for hermes-plugin — memory_parser and plugin lifecycle hooks.
+"""Tests for hermes — memory_parser and plugin lifecycle hooks.
 
 Verifies that the Hermes integration reuses CaoBridge for all Hub communication,
 matching the data flow of other agents (opencode, claude code).
@@ -22,11 +22,11 @@ class TestMemoryParser:
 
     @pytest.fixture
     def parser_module(self):
-        """Import memory_parser from the hermes-plugin directory."""
+        """Import memory_parser from the hermes directory."""
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "memory_parser",
-            str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes-plugin" / "memory_parser.py"),
+            str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes" / "memory_parser.py"),
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -99,9 +99,9 @@ class TestHermesPlugin:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "hermes_plugin",
-            str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes-plugin" / "__init__.py"),
+            str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes" / "__init__.py"),
             submodule_search_locations=[
-                str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes-plugin"),
+                str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes"),
             ],
         )
         mod = importlib.util.module_from_spec(spec)
@@ -109,7 +109,7 @@ class TestHermesPlugin:
         import importlib
         mp_spec = importlib.util.spec_from_file_location(
             "hermes_plugin.memory_parser",
-            str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes-plugin" / "memory_parser.py"),
+            str(Path(__file__).parent.parent.parent / "cao-bridge" / "hermes" / "memory_parser.py"),
         )
         mp_mod = importlib.util.module_from_spec(mp_spec)
         mp_spec.loader.exec_module(mp_mod)

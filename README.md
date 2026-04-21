@@ -212,7 +212,7 @@ Hub (cao-server)                Remote Machine
 3. **Plugin bridge** (`plugin/cao-bridge.ts`) — TypeScript plugin for OpenCode
 4. **SDK lifecycle** (`sdk/lifecycle.py`) — Python class for Claude Agent SDK / OpenCode SDK integration
 
-Additional integrations: Claude Code hooks (`cao-bridge/claude-code/`), Hermes plugin (`cao-bridge/hermes-plugin/`), git-based sync (`cao-bridge/git_sync.py`).
+Additional integrations: Claude Code hooks (`cao-bridge/claude-code/`), Hermes plugin (`cao-bridge/hermes/`), git-based sync (`cao-bridge/git_sync.py`).
 
 ### SDK Agent Support
 
@@ -339,7 +339,7 @@ cao-bridge/           Remote agent bridge implementations
 ├── sdk/              SDK lifecycle support (Claude Agent SDK, OpenCode SDK)
 ├── claude-code/      Claude Code hooks (SessionStart/Stop with L1 index injection)
 ├── plugin/           OpenCode TypeScript plugin
-└── hermes-plugin/    Hermes Agent integration
+└── hermes/    Hermes Agent integration
 cao-mcp-task-context/ Companion MCP server for directory context management
 agent_store/          Agent profiles (root_orchestrator.md, etc.)
 web/                  React + Vite + Tailwind frontend

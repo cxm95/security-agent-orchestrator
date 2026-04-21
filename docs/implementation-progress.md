@@ -237,11 +237,11 @@
 **目标**：为 hermes-agent 实现完整的 CAO 接入三件套，数据同步方式与其他 agent（opencode/claude code）完全一致：CaoBridge → HTTP API → 文件 → git checkpoint → git push/pull。
 
 **范围**：
-- `cao-bridge/hermes-plugin/plugin.yaml` — Hermes 插件清单
-- `cao-bridge/hermes-plugin/__init__.py` — 插件入口，复用 `CaoBridge` 类
-- `cao-bridge/hermes-plugin/memory_parser.py` — MEMORY.md § 解析 + SHA-256 去重
-- `cao-bridge/hermes-plugin/hermes-sync.sh` — 降级同步脚本
-- `cao-bridge/hermes-plugin/README.md` — 安装说明（Option A/B/C）
+- `cao-bridge/hermes/plugin.yaml` — Hermes 插件清单
+- `cao-bridge/hermes/__init__.py` — 插件入口，复用 `CaoBridge` 类
+- `cao-bridge/hermes/memory_parser.py` — MEMORY.md § 解析 + SHA-256 去重
+- `cao-bridge/hermes/hermes-sync.sh` — 降级同步脚本
+- `cao-bridge/hermes/README.md` — 安装说明（Option A/B/C）
 - `tests/test_hermes_plugin.py` — 15 个测试
 
 **关键设计**：
@@ -584,7 +584,7 @@
 
 **文档更新**：
 - `cao-integrated-execution-paths.md` §8.1, §8.3, §15.5 已刷新
-- `hermes-plugin/README.md` 全面更新
+- `hermes/README.md` 全面更新
 - `SKILL.md` 新增 Step 0 (sync) + 2 个新工具说明
 
 **状态**：✅ 完成 — 301 测试通过（289 既有 + 12 新增 git_sync）
@@ -801,7 +801,7 @@
 
 ### 19.6 Hermes Plugin Grader 触发
 
-- hermes-plugin/__init__.py: on_end() 中增加 grader_skill 检查，
+- hermes/__init__.py: on_end() 中增加 grader_skill 检查，
   如果 task context 有 grader_skill，排队 grader prompt 供下次 pre_llm 注入
 
 ### 19.7 security-grader Evo-Skill
@@ -867,7 +867,7 @@ notes/skills 保留供 Hub 内部使用（心跳生成的笔记、WebUI）。
 
 ### 20.6 Hermes Plugin 更新
 
-- `cao-bridge/hermes-plugin/__init__.py`: `_push_skills()` / `_push_memory()` 改为本地写入
+- `cao-bridge/hermes/__init__.py`: `_push_skills()` / `_push_memory()` 改为本地写入
   `~/.cao-evolution-client/` 目录，不再调用 HTTP API
 - 添加 `git_push()` 调用，写入完成后自动推送
 - 修复文件名碰撞：`_push_memory()` 添加 counter 后缀
