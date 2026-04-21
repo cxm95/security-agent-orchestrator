@@ -60,8 +60,9 @@ def test_lifecycle_start_stop():
     assert tid, "Expected non-empty terminal_id"
     print(f"  ✅ start() → tid={tid}")
 
-    # Build context
-    ctx = lifecycle.build_context(include_kickoff=False)
+    # Build context with L1 pull enabled (default is push-only)
+    with patch.dict(os.environ, {"CAO_PUSH_ONLY": "0"}):
+        ctx = lifecycle.build_context(include_kickoff=False)
     assert "[CAO]" in ctx, f"Context missing [CAO] prefix: {ctx[:50]}"
     assert f"Registered as {tid}" in ctx
     print(f"  ✅ build_context() → {len(ctx)} chars")

@@ -17,6 +17,7 @@
  *   CAO_DEBUG            — "1" to enable file-based debug logging
  *   CAO_HEARTBEAT_ENABLED — "0" to disable heartbeat injection (default: "1")
  *   CAO_FEEDBACK_ENABLED  — "1" to auto-fetch human feedback on idle (default: "0")
+ *   CAO_PUSH_ONLY        — "0" to enable L1 knowledge index pull (default: "1" — push-only)
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -298,7 +299,8 @@ export default (async ({ client }) => {
         // buffer is cleared when the first session is created, so the index
         // never reaches the submitted user message. Concatenating in JS and
         // submitting atomically guarantees the agent sees it.
-        if (!l1Prepended) {
+        // Skipped in push-only mode (default); set CAO_PUSH_ONLY=0 to re-enable.
+        if (!l1Prepended && (process.env.CAO_PUSH_ONLY ?? "1") === "0") {
           l1Prepended = true
           try {
             const r = await fetch(HUB + "/evolution/index", { signal: AbortSignal.timeout(3000) })

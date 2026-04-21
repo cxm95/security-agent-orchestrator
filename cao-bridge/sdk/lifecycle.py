@@ -154,10 +154,12 @@ class CaoAgentLifecycle:
 
         ctx = " ".join(parts)
 
-        # L1 Knowledge Index
-        l1_index = self.fetch_index()
-        if l1_index:
-            ctx += f"\n\n== Knowledge Index ==\n{l1_index}\n== End Knowledge Index =="
+        # L1 Knowledge Index — skipped in push-only mode (default).
+        # Set CAO_PUSH_ONLY=0 to re-enable.
+        if os.environ.get("CAO_PUSH_ONLY", "1") == "0":
+            l1_index = self.fetch_index()
+            if l1_index:
+                ctx += f"\n\n== Knowledge Index ==\n{l1_index}\n== End Knowledge Index =="
 
         return ctx
 

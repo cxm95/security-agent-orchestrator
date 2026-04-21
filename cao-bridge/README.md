@@ -73,3 +73,4 @@ inbox messages through the same `pending_input` queue.
 |----------|---------|-------------|
 | `CAO_HUB_URL` | `http://127.0.0.1:9889` | Hub server URL |
 | `CAO_AGENT_PROFILE` | `remote-opencode` | Agent profile name |
+| `CAO_PUSH_ONLY` | `1` | Push-only mode — skip L1 knowledge index pull. Set `0` to enable pull. |
