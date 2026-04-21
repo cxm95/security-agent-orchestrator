@@ -176,8 +176,10 @@ cao-bridge/
 │   ├── hooks/                       Session lifecycle hooks
 │   └── install.sh                   Installer
 ├── skill/cao-bridge/SKILL.md        Skill-based bridge
-├── plugin/cao-bridge.ts             OpenCode plugin bridge
-├── hermes/                   Hermes agent integration
+├── opencode/                        OpenCode integration
+│   ├── install.sh                   Installer
+│   └── plugin/cao-bridge.ts         TypeScript plugin
+├── hermes/                          Hermes agent integration
 │   ├── plugin.yaml
 │   ├── memory_parser.py
 │   ├── hermes-sync.sh

@@ -105,7 +105,9 @@ cao-bridge/                          远程 Agent 桥接实现
 ├── cao-session-mgr.sh               Session 管理 CLI（create/list/cleanup/info）
 ├── claude-code/                     Claude Code 集成（CLAUDE.md + hooks + .mcp.json）
 ├── skill/cao-bridge/SKILL.md        Skill 桥接协议文档
-├── plugin/cao-bridge.ts             [~443行] OpenCode 事件驱动插件（含 session 隔离）
+├── opencode/                        OpenCode 集成
+│   ├── install.sh                   安装脚本
+│   └── plugin/cao-bridge.ts         [~443行] 事件驱动插件（含 session 隔离）
 ├── sdk/                             SDK Agent 生命周期支持
 │   ├── __init__.py                  导出 CaoAgentLifecycle
 │   ├── lifecycle.py                 [~190行] SDK Agent 生命周期（start/stop/build_context/fetch_index）

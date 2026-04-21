@@ -646,7 +646,7 @@ cao-bridge/
 |--------|----------|----------------|-------------|
 | **MCP Bridge** | `cao_bridge_mcp.py` (16 工具) | Agent 手动 `cao_get_task` -> 加载 grader skill | ScoreResponse 中的心跳 -> Agent 直接处理 |
 | **Skill Bridge** | `skill/cao-bridge/SKILL.md` | Step 4: "cao_get_task → 加载 grader skill" | Step 4.5: "检查 heartbeat prompts" |
-| **Plugin Bridge** | `plugin/cao-bridge.ts` | 自动: session.idle → getTaskInfo → 注入 grader prompt → 提取 CAO_SCORE | Plugin 自动注入 heartbeat prompts |
+| **Plugin Bridge** | `opencode/plugin/cao-bridge.ts` | 自动: session.idle → getTaskInfo → 注入 grader prompt → 提取 CAO_SCORE | Plugin 自动注入 heartbeat prompts |
 | **Claude Code** | `claude-code/CLAUDE.md` | 同 MCP Bridge（CLAUDE.md 列出 cao_get_task） | Hooks + MCP 配置 |
 | **Hermes** | `hermes/__init__.py` | on_end() → get_task → 排队 grader prompt → pre_llm 注入 | on_session_end push → score report → pre_llm 注入 |
 
@@ -1111,4 +1111,4 @@ print(prompt)
 | `cao-bridge/cao_bridge.py` | `get_task()` ~行 227, `create_task()` ~行 209, `report_score()`, `init_session()`, `close_session()` |
 | `cao-bridge/cao_bridge_mcp.py` | Bridge 侧 16 工具: `cao_get_task`, `cao_create_task`, `cao_push`, `cao_recall`, `cao_session_info` 等 |
 | `cao-bridge/session_manager.py` | `create_session()`, `deactivate_session()`, `cleanup_sessions()`, `touch_session()` |
-| `cao-bridge/plugin/cao-bridge.ts` | OpenCode Plugin: session.idle → 二阶段 grader 流程 |
+| `cao-bridge/opencode/plugin/cao-bridge.ts` | OpenCode Plugin: session.idle → 二阶段 grader 流程 |

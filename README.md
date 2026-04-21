@@ -209,7 +209,7 @@ Hub (cao-server)                Remote Machine
 **Four bridge variants** (in `cao-bridge/`):
 1. **MCP bridge** (`cao_bridge_mcp.py`) — FastMCP stdio server with `cao_register`, `cao_poll`, `cao_report`
 2. **Skill bridge** (`skill/SKILL.md`) — instruction file using `curl` for the bridge protocol
-3. **Plugin bridge** (`plugin/cao-bridge.ts`) — TypeScript plugin for OpenCode
+3. **Plugin bridge** (`opencode/plugin/cao-bridge.ts`) — TypeScript plugin for OpenCode
 4. **SDK lifecycle** (`sdk/lifecycle.py`) — Python class for Claude Agent SDK / OpenCode SDK integration
 
 Additional integrations: Claude Code hooks (`cao-bridge/claude-code/`), Hermes plugin (`cao-bridge/hermes/`), git-based sync (`cao-bridge/git_sync.py`).
@@ -338,8 +338,8 @@ evo-skills/           5 platform-agnostic evolution skills
 cao-bridge/           Remote agent bridge implementations
 ├── sdk/              SDK lifecycle support (Claude Agent SDK, OpenCode SDK)
 ├── claude-code/      Claude Code hooks (SessionStart/Stop with L1 index injection)
-├── plugin/           OpenCode TypeScript plugin
-└── hermes/    Hermes Agent integration
+├── opencode/         OpenCode installer + TypeScript plugin
+└── hermes/           Hermes Agent integration
 cao-mcp-task-context/ Companion MCP server for directory context management
 agent_store/          Agent profiles (root_orchestrator.md, etc.)
 web/                  React + Vite + Tailwind frontend
