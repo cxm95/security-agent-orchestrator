@@ -160,15 +160,22 @@ class TestHermesPlugin:
         assert "pre_llm_call" in hook_names
 
     def test_push_skills_scans_directory(self, plugin_module, tmp_path):
-        """Test _push_skills writes hermes skills to local git clone."""
-        # Create mock skills
-        skill1 = tmp_path / "src" / "detect-sqli"
-        skill1.mkdir(parents=True)
-        (skill1 / "SKILL.md").write_text("---\nname: detect-sqli\n---\nSQLi detection skill")
+        """Test _push_skills writes cao-* skills to local git clone.
 
-        skill2 = tmp_path / "src" / "xss-scanner"
+        Non-prefixed skills are private and must not be pushed.
+        """
+        skill1 = tmp_path / "src" / "cao-detect-sqli"
+        skill1.mkdir(parents=True)
+        (skill1 / "SKILL.md").write_text("---\nname: cao-detect-sqli\n---\nSQLi detection skill")
+
+        skill2 = tmp_path / "src" / "cao-xss-scanner"
         skill2.mkdir(parents=True)
         (skill2 / "SKILL.md").write_text("XSS scanning skill")
+
+        # Private skill — must be skipped.
+        skill3 = tmp_path / "src" / "my-private-skill"
+        skill3.mkdir(parents=True)
+        (skill3 / "SKILL.md").write_text("private")
 
         dest = tmp_path / "clone" / "skills"
         bridge = MagicMock()
@@ -178,8 +185,9 @@ class TestHermesPlugin:
             count = plugin_module._push_skills(bridge)
 
         assert count == 2
-        assert (dest / "detect-sqli" / "SKILL.md").exists()
-        assert (dest / "xss-scanner" / "SKILL.md").exists()
+        assert (dest / "cao-detect-sqli" / "SKILL.md").exists()
+        assert (dest / "cao-xss-scanner" / "SKILL.md").exists()
+        assert not (dest / "my-private-skill").exists()
 
     def test_push_memory_parses_and_writes(self, plugin_module, tmp_path):
         """Test _push_memory writes entries as note files in local clone."""

@@ -48,6 +48,21 @@ fi
 
 # Push pending changes and deactivate session
 if [ -n "$SESSION_DIR" ] && [ -d "$SESSION_DIR/.git" ]; then
+  # Mirror local cao-* skills (e.g. evolved by secskill-evo into
+  # ~/.claude/skills/cao-<name>/) into the clone before push. Non-prefixed
+  # skills are private and never sync.
+  LOCAL_SKILLS="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+  if [ -d "$LOCAL_SKILLS" ]; then
+    mkdir -p "$SESSION_DIR/skills"
+    for skill_dir in "$LOCAL_SKILLS"/cao-*/; do
+      [ -d "$skill_dir" ] || continue
+      [ -f "${skill_dir}SKILL.md" ] || continue
+      name=$(basename "$skill_dir")
+      rm -rf "$SESSION_DIR/skills/$name"
+      cp -r "$skill_dir" "$SESSION_DIR/skills/$name" 2>/dev/null || true
+    done
+  fi
+
   # Push pending changes
   BRANCH=$(git -C "$SESSION_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   [ "$BRANCH" = "HEAD" ] && BRANCH="main"

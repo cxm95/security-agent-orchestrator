@@ -192,6 +192,47 @@ def push(cdir: Path | None = None, message: str = "agent sync") -> bool:
         return False
 
 
+# Shared-skill namespace. Only skills whose directory name starts with this
+# prefix participate in the CAO sync pipeline. Non-prefixed skills in agents'
+# local dirs stay private and are never pushed or overwritten by pull.
+SHARED_SKILL_PREFIX = "cao-"
+
+
+def is_shared_skill(name: str) -> bool:
+    return name.startswith(SHARED_SKILL_PREFIX)
+
+
+def import_local_skills(local_dir: Path, cdir: Path | None = None) -> int:
+    """Mirror `cao-*` skills from an agent's local skills dir into the clone.
+
+    Called before `cao_push` so agent-side edits (e.g. after secskill-evo
+    writes back to ~/.claude/skills/cao-<name>/) get staged for git push.
+    Non-prefixed skills are skipped — they remain private to the agent.
+    Returns count of skills mirrored.
+    """
+    import shutil
+
+    if not local_dir.exists():
+        return 0
+    dest_root = skills_dir(cdir)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for child in local_dir.iterdir():
+        if not (child.is_dir() and is_shared_skill(child.name)):
+            continue
+        if not (child / "SKILL.md").exists():
+            continue
+        dest = dest_root / child.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(child, dest)
+        count += 1
+        logger.debug("Imported local skill → clone: %s", child.name)
+    if count:
+        logger.info("Imported %d local cao-* skills into clone", count)
+    return count
+
+
 def skills_dir(cdir: Path | None = None) -> Path:
     """Return <client_dir>/skills/."""
     return (cdir or client_dir()) / "skills"

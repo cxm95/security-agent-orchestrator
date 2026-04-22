@@ -17,6 +17,24 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+def _candidate_local_skill_dirs() -> list[Path]:
+    """Agent-side skill dirs that may hold `cao-*` skills to push upstream.
+
+    CAO_LOCAL_SKILLS_DIR (colon-separated) overrides the default heuristic;
+    otherwise probe the known locations for claude-code, opencode, hermes.
+    Non-existent paths are silently dropped by import_local_skills.
+    """
+    override = os.environ.get("CAO_LOCAL_SKILLS_DIR", "")
+    if override:
+        return [Path(p).expanduser() for p in override.split(":") if p]
+    home = Path.home()
+    return [
+        home / ".claude" / "skills",
+        home / ".config" / "opencode" / "skills",
+        home / ".hermes" / "skills",
+    ]
+
+
 class CaoBridge:
     """HTTP client that registers with CAO Hub and exchanges input/output.
 
@@ -522,8 +540,17 @@ class CaoBridge:
         return pull()
 
     def push_repo(self, message: str = "agent sync") -> bool:
-        """Push any local agent-side changes back to the remote."""
-        from git_sync import push
+        """Push any local agent-side changes back to the remote.
+
+        Before pushing, mirror `cao-*` skills from the agent's local skills
+        dir(s) into the clone so edits made during the session are captured.
+        """
+        from git_sync import push, import_local_skills
+        for d in _candidate_local_skill_dirs():
+            try:
+                import_local_skills(d)
+            except Exception:
+                logger.debug("import_local_skills failed for %s", d, exc_info=True)
         return push(message=message)
 
     def client_skills_dir(self) -> Path:
@@ -542,23 +569,29 @@ class CaoBridge:
         return tasks_dir()
 
     def pull_skills_to_local(self, target_dir: Path) -> list[str]:
-        """Copy skills from the git clone into the agent's local skills dir.
+        """Copy `cao-*` skills from the git clone into the agent's local
+        skills dir. Non-prefixed clone entries are skipped; non-prefixed
+        local skills are never touched.
 
         Returns list of skill names synced.
         """
         import shutil
+        from git_sync import is_shared_skill
         src = self.client_skills_dir()
         if not src.exists():
             return []
         target_dir.mkdir(parents=True, exist_ok=True)
         synced: list[str] = []
         for child in src.iterdir():
-            if child.is_dir() and (child / "SKILL.md").exists():
+            if not (child.is_dir() and is_shared_skill(child.name)):
+                continue
+            if (child / "SKILL.md").exists():
                 dest = target_dir / child.name
-                dest.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(child, dest, dirs_exist_ok=True)
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(child, dest)
                 synced.append(child.name)
                 logger.debug("Synced skill %s → %s", child.name, dest)
         if synced:
-            logger.info("Synced %d skills to %s", len(synced), target_dir)
+            logger.info("Synced %d cao-* skills to %s", len(synced), target_dir)
         return synced

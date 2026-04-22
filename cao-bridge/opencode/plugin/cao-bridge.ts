@@ -136,6 +136,10 @@ export default (async ({ client }) => {
     const { execSync, spawnSync } = require("child_process")
     const { existsSync } = require("fs")
     if (!GIT_REMOTE || !existsSync(CLIENT_DIR + "/.git")) return false
+    // Mirror local cao-* skills into the clone first so any edits made
+    // during the session (e.g. secskill-evo writing back a new version)
+    // get committed by the git add -A below.
+    pushSkillsToClone()
     try {
       const branch = (() => {
         try {
@@ -176,23 +180,49 @@ export default (async ({ client }) => {
     }
   }
 
+  // Only skills with this prefix participate in CAO sync — keeps private
+  // opencode skills isolated from the shared pool.
+  const SHARED_SKILL_PREFIX = "cao-"
+  const LOCAL_SKILLS_DIR = (process.env.HOME || "") + "/.config/opencode/skills"
+
   function pullSkillsFromClone() {
-    const { existsSync, readdirSync, mkdirSync, cpSync } = require("fs")
+    const { existsSync, readdirSync, mkdirSync, rmSync, cpSync } = require("fs")
     const srcDir = CLIENT_DIR + "/skills"
-    const oc1 = (process.env.HOME || "") + "/.config/opencode/skills"
-    const tgtDir = existsSync(oc1) ? oc1 : oc1  // default opencode
     if (!existsSync(srcDir)) return
     try {
-      mkdirSync(tgtDir, { recursive: true })
+      mkdirSync(LOCAL_SKILLS_DIR, { recursive: true })
       for (const name of readdirSync(srcDir)) {
+        if (!name.startsWith(SHARED_SKILL_PREFIX)) continue
         const skillMd = srcDir + "/" + name + "/SKILL.md"
-        if (existsSync(skillMd)) {
-          cpSync(srcDir + "/" + name, tgtDir + "/" + name, { recursive: true })
-          dbg("synced skill: " + name)
-        }
+        if (!existsSync(skillMd)) continue
+        const dest = LOCAL_SKILLS_DIR + "/" + name
+        if (existsSync(dest)) rmSync(dest, { recursive: true, force: true })
+        cpSync(srcDir + "/" + name, dest, { recursive: true })
+        dbg("synced skill: " + name)
       }
     } catch (e: any) {
       dbg("skill pull error: " + (e.message || e))
+    }
+  }
+
+  function pushSkillsToClone() {
+    const { existsSync, readdirSync, mkdirSync, rmSync, cpSync, statSync } = require("fs")
+    const destRoot = CLIENT_DIR + "/skills"
+    if (!existsSync(LOCAL_SKILLS_DIR)) return
+    try {
+      mkdirSync(destRoot, { recursive: true })
+      for (const name of readdirSync(LOCAL_SKILLS_DIR)) {
+        if (!name.startsWith(SHARED_SKILL_PREFIX)) continue
+        const src = LOCAL_SKILLS_DIR + "/" + name
+        if (!statSync(src).isDirectory()) continue
+        if (!existsSync(src + "/SKILL.md")) continue
+        const dest = destRoot + "/" + name
+        if (existsSync(dest)) rmSync(dest, { recursive: true, force: true })
+        cpSync(src, dest, { recursive: true })
+        dbg("pushed skill: " + name)
+      }
+    } catch (e: any) {
+      dbg("skill push error: " + (e.message || e))
     }
   }
 

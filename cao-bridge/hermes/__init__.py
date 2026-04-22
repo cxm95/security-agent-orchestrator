@@ -21,7 +21,7 @@ from pathlib import Path
 # CaoBridge and git_sync live one directory up (cao-bridge/)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cao_bridge import CaoBridge  # noqa: E402
-from git_sync import push as git_push, skills_dir as client_skills_dir, notes_dir as client_notes_dir, set_session_dir  # noqa: E402
+from git_sync import push as git_push, skills_dir as client_skills_dir, notes_dir as client_notes_dir, set_session_dir, is_shared_skill  # noqa: E402
 from session_manager import create_session, deactivate_session, touch_session  # noqa: E402
 
 from .memory_parser import parse_memory  # noqa: E402
@@ -159,7 +159,9 @@ def _pull_skills_from_clone() -> int:
 
     count = 0
     for child in src.iterdir():
-        if child.is_dir() and (child / "SKILL.md").exists():
+        if not (child.is_dir() and is_shared_skill(child.name)):
+            continue
+        if (child / "SKILL.md").exists():
             dest = target / child.name
             dest.mkdir(parents=True, exist_ok=True)
             shutil.copytree(child, dest, dirs_exist_ok=True)
@@ -183,6 +185,8 @@ def _push_skills(bridge: CaoBridge) -> int:
     count = 0
     for skill_dir in skills_src.iterdir():
         if not skill_dir.is_dir():
+            continue
+        if not is_shared_skill(skill_dir.name):
             continue
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():

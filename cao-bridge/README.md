@@ -67,6 +67,15 @@ The `send_message` MCP tool (used by local agents) stores messages in the
 inbox database. When the remote agent polls, the Hub auto-delivers pending
 inbox messages through the same `pending_input` queue.
 
+## Shared Skill Namespace
+
+Only skills whose directory name starts with `cao-` participate in sync.
+Non-prefixed skills in `~/.claude/skills/`, `~/.config/opencode/skills/`,
+or `~/.hermes/skills/` stay **private** — they are never pushed to the Hub
+and never overwritten by pulls. To share a skill, rename it to `cao-<name>`
+so it enters the shared namespace; collisions within `cao-*` are resolved
+by git push order.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -74,3 +83,4 @@ inbox messages through the same `pending_input` queue.
 | `CAO_HUB_URL` | `http://127.0.0.1:9889` | Hub server URL |
 | `CAO_AGENT_PROFILE` | `remote-opencode` | Agent profile name |
 | `CAO_PUSH_ONLY` | `1` | Push-only mode — skip L1 knowledge index pull. Set `0` to enable pull. |
+| `CAO_LOCAL_SKILLS_DIR` | *(heuristic)* | Colon-separated list of local skill dirs to scan for `cao-*` skills on push. Defaults to the known claude-code / opencode / hermes paths. |

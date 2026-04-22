@@ -53,6 +53,9 @@ print(create_session(os.environ['_CAO_REMOTE'], agent_profile=os.environ['_CAO_P
       for skill_dir in "$SRC_SKILLS"/*/; do
         [ -f "${skill_dir}SKILL.md" ] || continue
         name=$(basename "$skill_dir")
+        # Only sync shared-namespace skills (cao-* prefix) — leave private
+        # local skills untouched.
+        case "$name" in cao-*) ;; *) continue ;; esac
         cp -r "$skill_dir" "$CLAUDE_SKILLS/$name" 2>/dev/null || true
       done
     fi
