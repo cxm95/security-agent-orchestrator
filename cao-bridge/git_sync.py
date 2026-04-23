@@ -24,9 +24,67 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_CLIENT_DIR = Path.home() / ".cao-evolution-client"
+LOCAL_SHARED_REPO = Path.home() / ".cao-evolution-local" / "shared.git"
 
 # Per-session directory override (set by session_manager at init time)
 _current_session_dir: Path | None = None
+
+
+def _is_local_only() -> bool:
+    """Check if CAO_LOCAL_ONLY mode is enabled."""
+    return os.environ.get("CAO_LOCAL_ONLY", "0") == "1"
+
+
+def ensure_local_shared_repo() -> str:
+    """Create a local bare git repo for cross-instance sharing.
+
+    Seeds the repo with an initial commit so clones get a valid branch.
+    Returns the file:// URL suitable for git clone/push/pull.
+    """
+    import tempfile
+
+    url = f"file://{LOCAL_SHARED_REPO}"
+    if LOCAL_SHARED_REPO.exists():
+        return url
+    LOCAL_SHARED_REPO.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(LOCAL_SHARED_REPO)],
+        capture_output=True, text=True, check=True,
+    )
+    # Seed with an initial commit so clones have a valid main branch.
+    tmpdir = tempfile.mkdtemp(prefix="cao-seed-")
+    try:
+        seed = Path(tmpdir) / "seed"
+        subprocess.run(["git", "clone", url, str(seed)],
+                        capture_output=True, text=True, check=True)
+        subprocess.run(["git", "checkout", "-b", "main"],
+                        cwd=str(seed), capture_output=True, text=True, check=False)
+        subprocess.run(["git", "config", "user.name", "cao-agent"],
+                        cwd=str(seed), capture_output=True, text=True, check=True)
+        subprocess.run(["git", "config", "user.email", "cao-agent@local"],
+                        cwd=str(seed), capture_output=True, text=True, check=True)
+        (seed / "notes").mkdir()
+        (seed / "skills").mkdir()
+        (seed / "notes" / ".gitkeep").write_text("")
+        (seed / "skills" / ".gitkeep").write_text("")
+        subprocess.run(["git", "add", "-A"],
+                        cwd=str(seed), capture_output=True, text=True, check=True)
+        subprocess.run(["git", "commit", "-m", "initial seed"],
+                        cwd=str(seed), capture_output=True, text=True, check=True)
+        subprocess.run(["git", "push", "origin", "main"],
+                        cwd=str(seed), capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Failed to seed bare repo: %s", exc.stderr)
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    logger.info("Created local shared bare repo at %s", LOCAL_SHARED_REPO)
+    return url
+
+
+def local_index_path(cdir: Path | None = None) -> Path:
+    """Return <client_dir>/index.md — local L1 knowledge index."""
+    return (cdir or client_dir()) / "index.md"
 
 
 def set_session_dir(path: Path) -> None:
@@ -54,8 +112,17 @@ def client_dir() -> Path:
 
 
 def _git_remote() -> str:
-    """Return the configured git remote URL (empty string if unset)."""
-    return os.environ.get("CAO_GIT_REMOTE", "")
+    """Return the configured git remote URL (empty string if unset).
+
+    In local-only mode, auto-creates and returns a local bare repo URL
+    when CAO_GIT_REMOTE is not explicitly set.
+    """
+    explicit = os.environ.get("CAO_GIT_REMOTE", "")
+    if explicit:
+        return explicit
+    if _is_local_only():
+        return ensure_local_shared_repo()
+    return ""
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:

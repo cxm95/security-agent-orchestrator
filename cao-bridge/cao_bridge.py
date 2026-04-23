@@ -54,6 +54,28 @@ class CaoBridge:
 
     _TIMEOUT = 30  # seconds
 
+    @property
+    def _local_only(self) -> bool:
+        """True when CAO_LOCAL_ONLY=1 — all Hub HTTP calls become no-ops."""
+        return os.environ.get("CAO_LOCAL_ONLY", "0") == "1"
+
+    def _local_search(self, query: str, top_k: int = 10) -> list:
+        """Keyword search over local notes directory (local-only fallback)."""
+        from git_sync import notes_dir
+        ndir = notes_dir()
+        if not ndir.exists():
+            return []
+        results = []
+        terms = query.lower().split()
+        for f in ndir.glob("*.md"):
+            content = f.read_text(errors="ignore")
+            lower = content.lower()
+            score = sum(lower.count(t) for t in terms)
+            if score > 0:
+                results.append({"title": f.stem, "content": content, "score": score})
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+
     # ── Session lifecycle ────────────────────────────────────────────────
 
     def init_session(self, git_remote: str = "") -> Path:
@@ -71,6 +93,9 @@ class CaoBridge:
         url = git_remote or self._git_remote
         if not url:
             url = os.environ.get("CAO_GIT_REMOTE", "")
+        if not url and self._local_only:
+            from git_sync import ensure_local_shared_repo
+            url = ensure_local_shared_repo()
         if not url:
             raise RuntimeError(
                 "No git remote configured. Set CAO_GIT_REMOTE env var "
@@ -108,6 +133,10 @@ class CaoBridge:
 
     def register(self) -> str:
         """Register with Hub, returns terminal_id."""
+        if self._local_only:
+            self.terminal_id = f"local-{self.agent_profile}"
+            logger.info("Local-only mode: terminal_id=%s", self.terminal_id)
+            return self.terminal_id
         resp = requests.post(f"{self.hub_url}/remotes/register",
                              json={"agent_profile": self.agent_profile},
                              timeout=self._TIMEOUT)
@@ -132,6 +161,8 @@ class CaoBridge:
         register fresh.
         """
         if not terminal_id:
+            return None
+        if self._local_only:
             return None
         url = f"{self.hub_url}/remotes/{terminal_id}/reattach"
         resp = requests.post(url, timeout=self._TIMEOUT)
@@ -176,6 +207,8 @@ class CaoBridge:
 
     def poll(self) -> Optional[str]:
         """Poll Hub for pending input. Returns message or None."""
+        if self._local_only:
+            return None
         if not self.terminal_id:
             raise RuntimeError("Not registered")
         resp = requests.get(f"{self.hub_url}/remotes/{self.terminal_id}/poll",
@@ -189,6 +222,8 @@ class CaoBridge:
     def report(self, status: Optional[str] = None, output: Optional[str] = None,
                append: bool = False) -> None:
         """Report status and/or output to Hub."""
+        if self._local_only:
+            return
         if not self.terminal_id:
             raise RuntimeError("Not registered")
         body = {}
@@ -221,6 +256,8 @@ class CaoBridge:
                      agent_profile: str = "", batch: str = "",
                      evolution_signals: Optional[dict] = None) -> dict:
         """Report an evaluation score to the Hub."""
+        if self._local_only:
+            return {}
         agent_id = self.terminal_id or "anonymous"
         body: dict = {"agent_id": agent_id, "score": score,
                        "title": title, "feedback": feedback}
@@ -240,6 +277,8 @@ class CaoBridge:
 
     def get_leaderboard(self, task_id: str, top_n: int = 10) -> dict:
         """Get the leaderboard for a task."""
+        if self._local_only:
+            return {"scores": []}
         resp = requests.get(
             f"{self.hub_url}/evolution/{task_id}/leaderboard",
             params={"top_n": top_n}, timeout=self._TIMEOUT,
@@ -250,6 +289,8 @@ class CaoBridge:
     def search_knowledge(self, query: str, tags: str = "",
                          top_k: int = 10) -> list:
         """Search shared knowledge (notes + skills)."""
+        if self._local_only:
+            return self._local_search(query, top_k)
         resp = requests.get(
             f"{self.hub_url}/evolution/knowledge/search",
             params={"query": query, "tags": tags, "top_k": top_k},
@@ -262,6 +303,8 @@ class CaoBridge:
                          top_k: int = 10,
                          include_content: bool = False) -> list:
         """BM25-ranked knowledge recall (more precise than search)."""
+        if self._local_only:
+            return self._local_search(query, top_k)
         resp = requests.get(
             f"{self.hub_url}/evolution/knowledge/recall",
             params={
@@ -275,6 +318,12 @@ class CaoBridge:
 
     def fetch_document(self, doc_id: str) -> dict:
         """Fetch a specific document by ID (selective sync)."""
+        if self._local_only:
+            from git_sync import notes_dir
+            p = notes_dir() / f"{doc_id}.md"
+            if p.exists():
+                return {"title": doc_id, "content": p.read_text(errors="ignore")}
+            return {}
         resp = requests.get(
             f"{self.hub_url}/evolution/knowledge/document/{doc_id}",
             timeout=self._TIMEOUT,
@@ -288,6 +337,10 @@ class CaoBridge:
         Returns the index content, or empty string if no index is available.
         SDK-based agents use this to inject knowledge context at session start.
         """
+        if self._local_only:
+            from git_sync import local_index_path
+            p = local_index_path()
+            return p.read_text(errors="ignore") if p.exists() else ""
         resp = requests.get(
             f"{self.hub_url}/evolution/index",
             timeout=self._TIMEOUT,
@@ -305,6 +358,8 @@ class CaoBridge:
                     tips: list | None = None, group: str = "",
                     group_tags: list | None = None, force: bool = False) -> dict:
         """Create or update a task on the Hub (agent-side registration)."""
+        if self._local_only:
+            return {"status": "local_only", "task_id": task_id}
         body: dict = {
             "task_id": task_id, "name": name or task_id,
             "description": description, "grader_skill": grader_skill,
@@ -326,6 +381,8 @@ class CaoBridge:
 
     def get_task(self, task_id: str) -> dict | None:
         """Fetch task details from Hub. Returns None if not found."""
+        if self._local_only:
+            return None
         resp = requests.get(f"{self.hub_url}/evolution/{task_id}",
                             timeout=self._TIMEOUT)
         if resp.status_code == 404:
@@ -335,6 +392,8 @@ class CaoBridge:
 
     def list_tasks(self) -> list:
         """List all tasks on the Hub."""
+        if self._local_only:
+            return []
         resp = requests.get(f"{self.hub_url}/evolution/tasks",
                             timeout=self._TIMEOUT)
         resp.raise_for_status()
@@ -344,12 +403,9 @@ class CaoBridge:
 
     def submit_report(self, task_id: str, findings: list[dict],
                       auto_score: float | None = None) -> dict:
-        """Submit a vulnerability report; registers the report_id locally.
-
-        ``findings`` is a list of dicts with keys:
-          description (required), severity, file_path, line, category,
-          finding_id (optional, server fills in if blank).
-        """
+        """Submit a vulnerability report; registers the report_id locally."""
+        if self._local_only:
+            return {"status": "local_only"}
         from report_registry import add_report
 
         agent_id = self.terminal_id or "anonymous"
@@ -373,23 +429,10 @@ class CaoBridge:
     def fetch_feedbacks(self, task_id: str = "",
                         template_path: str = "",
                         output_dir: str = "") -> dict:
-        """Poll the Hub for annotations on pending reports; land results to disk.
-
-        For each pending report (optionally filtered by task_id) whose
-        status on the Hub is ``annotated``, writes a
-        ``<reports_dir>/<report_id>.result`` file and updates the registry.
-
-        If any new annotations were fetched, renders the feedback markdown
-        from ``template_path`` into ``<output_dir>/evolve_from_feedback.md``.
-
-        Returns
-        -------
-        dict
-            ``feedback_md_path``: str (empty if nothing fetched),
-            ``fetched``: list of report_id,
-            ``pending``: list of report_id still awaiting annotation,
-            ``result_files``: list of absolute paths to new .result files.
-        """
+        """Poll the Hub for annotations on pending reports; land results to disk."""
+        if self._local_only:
+            return {"feedback_md_path": "", "fetched": [],
+                    "pending": [], "result_files": []}
         import json as _json
         from report_registry import list_pending, mark_annotated, reports_dir
 

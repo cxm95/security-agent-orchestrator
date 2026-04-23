@@ -32,6 +32,7 @@ export default (async ({ client }) => {
   const DEBUG = process.env.CAO_DEBUG === "1"
   const HEARTBEAT = (process.env.CAO_HEARTBEAT_ENABLED ?? "1") !== "0"
   const FEEDBACK = process.env.CAO_FEEDBACK_ENABLED === "1"
+  const LOCAL_ONLY = (process.env.CAO_LOCAL_ONLY ?? "0") === "1"
 
   let terminalId: string | null = process.env.CAO_TERMINAL_ID || null
   let awaitingResult = false
@@ -41,7 +42,38 @@ export default (async ({ client }) => {
   let l1Prepended = false
 
   // ── Agent-side git sync ────────────────────────────────────────────
-  const GIT_REMOTE = process.env.CAO_GIT_REMOTE || ""
+  let GIT_REMOTE = process.env.CAO_GIT_REMOTE || ""
+  if (LOCAL_ONLY && !GIT_REMOTE) {
+    const localBare = (process.env.HOME || "") + "/.cao-evolution-local/shared.git"
+    const { existsSync } = require("fs")
+    const { spawnSync } = require("child_process")
+    if (!existsSync(localBare)) {
+      const { mkdirSync, mkdtempSync, writeFileSync, rmSync } = require("fs")
+      const { tmpdir } = require("os")
+      mkdirSync(localBare.replace("/shared.git", ""), { recursive: true })
+      spawnSync("git", ["init", "--bare", localBare], { stdio: "pipe" })
+      // Seed with initial commit so clones get a valid main branch
+      const seedDir = mkdtempSync(tmpdir() + "/cao-seed-")
+      try {
+        const url = "file://" + localBare
+        spawnSync("git", ["clone", url, seedDir + "/repo"], { stdio: "pipe" })
+        const s = seedDir + "/repo"
+        spawnSync("git", ["checkout", "-b", "main"], { cwd: s, stdio: "pipe" })
+        spawnSync("git", ["config", "user.name", "cao-agent"], { cwd: s, stdio: "pipe" })
+        spawnSync("git", ["config", "user.email", "cao-agent@local"], { cwd: s, stdio: "pipe" })
+        mkdirSync(s + "/notes", { recursive: true })
+        mkdirSync(s + "/skills", { recursive: true })
+        writeFileSync(s + "/notes/.gitkeep", "")
+        writeFileSync(s + "/skills/.gitkeep", "")
+        spawnSync("git", ["add", "-A"], { cwd: s, stdio: "pipe" })
+        spawnSync("git", ["commit", "-m", "initial seed"], { cwd: s, stdio: "pipe" })
+        spawnSync("git", ["push", "origin", "main"], { cwd: s, stdio: "pipe" })
+      } catch (_) { /* best-effort seed */ }
+      try { rmSync(seedDir, { recursive: true, force: true }) } catch (_) {}
+      dbg("created local bare repo: " + localBare)
+    }
+    GIT_REMOTE = "file://" + localBare
+  }
   const SCRIPT_DIR = __dirname + "/.."  // parent of installed plugin dir; passed as _CAO_SCRIPT_DIR to python subprocess
   let CLIENT_DIR = process.env.CAO_CLIENT_DIR || ""
 
@@ -236,6 +268,7 @@ export default (async ({ client }) => {
   }
 
   async function hub(path: string, opts?: RequestInit): Promise<any> {
+    if (LOCAL_ONLY) return {}
     const r = await fetch(HUB + path, {
       ...opts,
       headers: { "Content-Type": "application/json", ...opts?.headers },
@@ -245,7 +278,7 @@ export default (async ({ client }) => {
   }
 
   async function report(st: string, output?: string) {
-    if (!terminalId) return
+    if (LOCAL_ONLY || !terminalId) return
     const body: Record<string, string> = { status: st }
     if (output !== undefined) body.output = output
     await hub("/remotes/" + terminalId + "/report", {
@@ -397,7 +430,10 @@ export default (async ({ client }) => {
   // Reattach-first: cold start of OpenCode should try to resume the
   // Hub-side terminal that previous runs created before falling back to
   // register (which would strand any queued tasks under a dead id).
-  if (!terminalId) {
+  if (LOCAL_ONLY) {
+    terminalId = "local-" + PROFILE
+    dbg("local-only mode: " + terminalId)
+  } else if (!terminalId) {
     const cached = readCachedTerminalId()
     if (cached) {
       try {
@@ -442,8 +478,12 @@ export default (async ({ client }) => {
   // appendPrompt at startup does not survive TUI session creation.
 
   // Start periodic polling immediately (no event dependency)
-  setInterval(pollAndInject, POLL_MS)
-  dbg("timer started, interval=" + POLL_MS)
+  if (!LOCAL_ONLY) {
+    setInterval(pollAndInject, POLL_MS)
+    dbg("timer started, interval=" + POLL_MS)
+  } else {
+    dbg("local-only mode: polling disabled")
+  }
 
   // Deactivate session on process exit
   if (CLIENT_DIR && GIT_REMOTE && !process.env.CAO_CLIENT_DIR) {

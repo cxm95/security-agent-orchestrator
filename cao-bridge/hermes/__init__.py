@@ -5,6 +5,9 @@ ensuring hermes data flows through the identical path:
   Agent writes files locally → git push → Hub git pull → BM25 reindex
   Agent-side: git pull from shared repo → ~/.cao-evolution-client/
 
+# TODO(local-only): add CAO_LOCAL_ONLY support — skip Hub register/report,
+# keep git-based skill/memory sync. See opencode plugin for reference.
+
 Hooks:
   on_session_start — git pull + register + inject shared knowledge + pull skills
   on_session_end   — write hermes skills + MEMORY.md to local git, push, pull

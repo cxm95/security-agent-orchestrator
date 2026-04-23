@@ -84,3 +84,31 @@ by git push order.
 | `CAO_AGENT_PROFILE` | `remote-opencode` | Agent profile name |
 | `CAO_PUSH_ONLY` | `1` | Push-only mode — skip L1 knowledge index pull. Set `0` to enable pull. |
 | `CAO_LOCAL_SKILLS_DIR` | *(heuristic)* | Colon-separated list of local skill dirs to scan for `cao-*` skills on push. Defaults to the known claude-code / opencode / hermes paths. |
+
+## Local-Only Mode
+
+For same-machine setups without a Hub server, set `CAO_LOCAL_ONLY=1`.
+Agents share notes and skills via a local bare git repo at
+`~/.cao-evolution-local/shared.git` (auto-created on first use).
+
+```bash
+export CAO_LOCAL_ONLY=1
+# Start any agent — it will auto-create the local shared repo
+```
+
+| Feature | Behavior |
+|---------|----------|
+| Hub registration | Skipped — local terminal ID assigned |
+| Task polling | Disabled |
+| Heartbeat / auto-evolution | Disabled — trigger skills manually via prompt |
+| Notes / skills sharing | Local git (`file://` bare repo, cross-instance) |
+| Knowledge search | Local file search over `notes/` directory |
+| L1 knowledge index | Manual — trigger `cao-build-l1-index` skill after 3+ notes |
+
+**Current scope:** OpenCode plugin fully supported. Claude Code hooks and
+Hermes plugin have TODO markers for future support.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CAO_LOCAL_ONLY` | `0` | Enable local-only mode — no Hub, no upload |
+| `CAO_GIT_REMOTE` | *(auto)* | Optional in local mode; auto-uses `file://~/.cao-evolution-local/shared.git` |

@@ -14,6 +14,9 @@ if [ "${CAO_HOOKS_ENABLED:-1}" = "0" ]; then
   exit 0
 fi
 
+# TODO(local-only): add CAO_LOCAL_ONLY support — skip Hub report curl,
+# keep skill mirror and git push to local bare repo.
+
 # Bypass proxy for local Hub communication
 export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost"
 export NO_PROXY="$no_proxy"
