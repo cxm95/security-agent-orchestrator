@@ -1,5 +1,7 @@
 # CLI Agent Orchestrator (CAO)
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/cxm95/security-agent-orchestrator)
+
 > Fork of [awslabs/cli-agent-orchestrator](https://github.com/awslabs/cli-agent-orchestrator), extended with a CORAL-inspired **co-evolution system** and **memory loading**. CAO orchestrates multiple AI coding agents in tmux terminals (or remotely via HTTP bridges) and adds a continuous improvement loop: agents report scores, the Hub detects plateaus, and heartbeat prompts trigger reflection, consolidation, pivots, and skill evolution — all synchronized through a git-backed knowledge repository.
 
 ## Architecture Overview
