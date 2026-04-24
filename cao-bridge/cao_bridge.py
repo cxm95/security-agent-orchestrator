@@ -585,11 +585,15 @@ class CaoBridge:
     def push_repo(self, message: str = "agent sync") -> bool:
         """Push any local agent-side changes back to the remote.
 
-        Before pushing, mirror `cao-*` skills from the agent's local skills
-        dir(s) into the clone so edits made during the session are captured.
+        Before pushing: auto-adopt non-cao skills, then mirror `cao-*`
+        skills from the agent's local skills dir(s) into the clone.
         """
         from git_sync import push, import_local_skills
         for d in _candidate_local_skill_dirs():
+            try:
+                self._auto_adopt_skills(d)
+            except Exception:
+                logger.debug("auto_adopt_skills failed for %s", d, exc_info=True)
             try:
                 import_local_skills(d)
             except Exception:
@@ -638,3 +642,92 @@ class CaoBridge:
         if synced:
             logger.info("Synced %d cao-* skills to %s", len(synced), target_dir)
         return synced
+
+    # ── Skill adoption ──────────────────────────────────────────────
+
+    def _auto_adopt_skills(self, local_dir: Path) -> list[str]:
+        """Auto-adopt non-cao skills into the shared pipeline.
+
+        For each non-prefixed skill in *local_dir*, check whether a
+        ``cao-{name}`` counterpart already exists locally or in the
+        shared git clone.  If not, copy it with the ``cao-`` prefix so
+        that the next ``import_local_skills`` picks it up.
+
+        Returns list of newly adopted skill names (with prefix).
+        """
+        import shutil
+        from git_sync import SHARED_SKILL_PREFIX, is_shared_skill, skills_dir
+
+        if not local_dir.exists():
+            return []
+
+        clone_skills = skills_dir()
+        adopted: list[str] = []
+        for child in sorted(local_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            if is_shared_skill(child.name):
+                continue
+            if not (child / "SKILL.md").exists():
+                continue
+
+            target_name = SHARED_SKILL_PREFIX + child.name
+            # Dedup: already adopted locally?
+            if (local_dir / target_name).exists():
+                continue
+            # Dedup: already in shared pool (git clone)?
+            if clone_skills.exists() and (clone_skills / target_name).exists():
+                continue
+
+            dest = local_dir / target_name
+            shutil.copytree(child, dest)
+            adopted.append(target_name)
+            logger.info("Auto-adopted skill: %s → %s", child.name, target_name)
+
+        return adopted
+
+    def adopt_skill(self, skill_name: str, new_name: str = "") -> dict:
+        """Explicitly adopt a single non-cao skill into the shared pipeline.
+
+        Searches candidate local skill dirs for *skill_name*, copies it
+        as ``cao-{new_name or skill_name}``.  Returns a dict with
+        adoption details or raises ValueError on failure.
+        """
+        import shutil
+        from git_sync import SHARED_SKILL_PREFIX, is_shared_skill, skills_dir
+
+        if is_shared_skill(skill_name):
+            raise ValueError(
+                f"'{skill_name}' already has the '{SHARED_SKILL_PREFIX}' prefix"
+            )
+
+        target_name = SHARED_SKILL_PREFIX + (new_name or skill_name)
+
+        # Find source
+        for d in _candidate_local_skill_dirs():
+            src = d / skill_name
+            if src.is_dir() and (src / "SKILL.md").exists():
+                dest = d / target_name
+                # Dedup: local
+                if dest.exists():
+                    raise ValueError(
+                        f"{target_name} already exists in {d}"
+                    )
+                # Dedup: shared pool
+                clone_skills = skills_dir()
+                if clone_skills.exists() and (clone_skills / target_name).exists():
+                    raise ValueError(
+                        f"{target_name} already exists in shared pool"
+                    )
+                shutil.copytree(src, dest)
+                logger.info("Adopted skill: %s → %s in %s", skill_name, target_name, d)
+                return {
+                    "adopted": target_name,
+                    "source": skill_name,
+                    "source_path": str(src),
+                    "dest_path": str(dest),
+                }
+
+        raise ValueError(
+            f"Skill '{skill_name}' not found in any local skills directory"
+        )

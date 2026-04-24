@@ -413,6 +413,27 @@ async def cao_pull_skills(target_dir: str = "") -> str:
 
 
 @mcp.tool()
+async def cao_adopt_skill(skill_name: str, new_name: str = "") -> str:
+    """Adopt a non-cao-prefixed local skill into the shared pipeline.
+
+    Copies the skill with a ``cao-`` prefix so it participates in
+    cross-agent sync.  The original skill is kept unchanged.
+
+    Args:
+        skill_name: Local skill directory name (e.g. "my-scanner").
+        new_name: Optional custom name (without cao- prefix).
+                  Defaults to skill_name → "cao-my-scanner".
+    """
+    try:
+        result = bridge.adopt_skill(skill_name, new_name)
+        return json.dumps({"ok": True, **result})
+    except ValueError as e:
+        return json.dumps({"ok": False, "error": str(e)})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+@mcp.tool()
 async def cao_session_info() -> str:
     """Return current session metadata (session_id, directory, status).
 
