@@ -40,6 +40,8 @@ bridge = CaoBridge(hub_url=hub_url, agent_profile=agent_profile)
 
 # Initialize per-session isolation (git clone into session directory)
 git_remote = os.environ.get("CAO_GIT_REMOTE", "")
+is_local_only = os.environ.get("CAO_LOCAL_ONLY", "0") == "1"
+
 if git_remote:
     try:
         bridge.init_session(git_remote=git_remote)
@@ -47,6 +49,17 @@ if git_remote:
         logger.info("Session initialized: %s", bridge.session_dir)
     except Exception:
         logger.warning("Session init failed, falling back to legacy mode", exc_info=True)
+elif is_local_only:
+    # LOCAL_ONLY mode without explicit CAO_GIT_REMOTE:
+    # Ensure ~/.cao-evolution-client/ is a valid git repo so that
+    # cao_push / cao_sync work. git_sync._git_remote() will auto-create
+    # a local bare repo at ~/.cao-evolution-local/shared.git.
+    try:
+        from git_sync import init_client_repo
+        init_client_repo()
+        logger.info("Local-only git repo initialized")
+    except Exception:
+        logger.warning("Local-only git init failed — cao_push/cao_sync will be unavailable", exc_info=True)
 
 # Recall mode: "full" = git clone + text grep; "selective" = BM25 recall + on-demand fetch
 RECALL_MODE = os.environ.get("CAO_RECALL_MODE", "full")

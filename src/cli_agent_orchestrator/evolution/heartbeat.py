@@ -29,6 +29,7 @@ DEFAULT_PROMPTS = {
     "pivot": _load_prompt("pivot"),
     "feedback_reflect": _load_prompt("feedback_reflect"),
     "evolve_skill": _load_prompt("evolve_skill"),
+    "generate_skill": _load_prompt("generate_skill"),
 }
 
 
@@ -103,12 +104,13 @@ def write_heartbeat_config(evo_dir: str, agent_id: str, actions: list[dict]) -> 
 
 
 def get_default_actions() -> list[dict]:
-    """Return sensible defaults: reflect every 1, consolidate every 5, pivot after 5, evolve_skill after 3."""
+    """Return sensible defaults: reflect every 1, consolidate every 5, pivot after 5, evolve_skill after 3, generate_skill every 5."""
     return [
         {"name": "reflect", "every": 1, "trigger": "interval", "is_global": False},
         {"name": "consolidate", "every": 5, "trigger": "interval", "is_global": True},
         {"name": "pivot", "every": 5, "trigger": "plateau", "is_global": False},
         {"name": "evolve_skill", "every": 3, "trigger": "plateau", "is_global": False},
+        {"name": "generate_skill", "every": 5, "trigger": "interval", "is_global": False},
     ]
 
 
@@ -136,7 +138,8 @@ def build_runner(evo_dir: str, agent_id: str) -> HeartbeatRunner:
 def render_prompt(action: HeartbeatAction, agent_id: str, task_id: str,
                   leaderboard: str = "",
                   evolution_signals: dict | None = None,
-                  evals_since_improvement: int = 0) -> str:
+                  evals_since_improvement: int = 0,
+                  local_eval_count: int = 0) -> str:
     """Fill template variables in a heartbeat prompt."""
     signals_json = json.dumps(evolution_signals, indent=2) if evolution_signals else "{}"
     return (action.prompt
@@ -144,7 +147,8 @@ def render_prompt(action: HeartbeatAction, agent_id: str, task_id: str,
             .replace("{task_id}", task_id)
             .replace("{leaderboard}", leaderboard)
             .replace("{evolution_signals_json}", signals_json)
-            .replace("{evals_since_improvement}", str(evals_since_improvement)))
+            .replace("{evals_since_improvement}", str(evals_since_improvement))
+            .replace("{consecutive_high_scores}", str(local_eval_count)))
 
 
 # ── Integration: check_triggers ───────────────────────────────────────
@@ -174,7 +178,7 @@ def check_triggers(
     )
     results = []
     for action in triggered:
-        prompt = render_prompt(action, agent_id, task_id, leaderboard, evolution_signals, evals_since_improvement)
+        prompt = render_prompt(action, agent_id, task_id, leaderboard, evolution_signals, evals_since_improvement, local_eval_count)
         results.append({"name": action.name, "prompt": prompt})
         logger.info(f"Heartbeat triggered: {action.name} for agent={agent_id} task={task_id}")
 

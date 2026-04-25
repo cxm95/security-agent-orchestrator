@@ -1026,3 +1026,103 @@ Hub 端常驻后台 Agent，随 Hub 启动/关闭自动管理：
 **测试结果**：350/350 通过，SDK E2E 3/3 通过
 
 **状态**：✅ 完成
+
+---
+
+## 步骤 22：secskill-evo-neo（保守进化 Skill）
+
+**目标**：替代 secskill-evo，实现纯 Evolution Mode 的 skill 进化框架。
+核心改进：双重证据门控（失败证据 + 改进证据缺一不可）、L0-L3 四级变更控制、
+泛化性强制检查。砍掉 Create Mode 及其全部基础设施（eval viewer、subagent 并行测试、
+description 优化循环、benchmark、打包）。
+
+**动机**：secskill-evo 存在多个结构性问题：
+- `eval-viewer/generate_review.py` 缺失（SKILL.md 7 处引用，Create Mode 核心循环断裂）
+- `assertions` / `expectations` 术语混用（跨组件数据流断裂）
+- Create Mode 和 Evolution Mode 评分体系割裂（grader 0-1 vs judge 0-10）
+- git_version.py 缺乏工作区隔离保护（可能污染父仓库）
+- 无克制性进化机制（"make minimal changes" 仅是一句建议，无强制门控）
+
+### 22.1 新增文件
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `evo-skills/secskill-evo-neo/SKILL.md` | 312 | 主指令：6 步流程（收集→评估→克制审查→隔离修改→提交→记录） |
+| `evo-skills/secskill-evo-neo/agents/judge.md` | 208 | LLM-as-Judge：binary + 0-100 soft score + root cause 分类 + 泛化性评分 |
+| `evo-skills/secskill-evo-neo/references/conservative-evolution.md` | 230 | 保守进化框架：双重证据门、L0-L3 变更级别、泛化性检查清单、5 个反模式 |
+| `evo-skills/secskill-evo-neo/references/schemas.md` | 169 | JSON schema：judge_results.json + utility.json（统一术语） |
+| `evo-skills/secskill-evo-neo/scripts/git_version.py` | 459 | Git 版本管理：新增 SAFE_PREFIX 检查，mutating 命令拒绝 /tmp/cao-evo-workspace/ 之外操作 |
+
+### 22.2 关键设计决策
+
+- **纯 Evolution Mode**：Create Mode 是不同问题域，不属于 CAO 自主进化场景
+- **双重证据门**：失败证据 + 改进证据缺一不可，不是"出了问题就改"
+- **L0 是常态**：大多数进化周期应以 L0（不改）结束，如果每次都改说明在过拟合
+- **utility.json mandatory**：每次进化周期必须记录（含 L0 跳过），作为 heartbeat 信号源
+- **Self-review + 延迟验证**：不 spawn subagent 重新执行 task，改动效果在下一轮自然验证
+- **评分统一为 0-100**：与 CAO grader 体系对齐
+
+### 22.3 更新的现有文件
+
+| 文件 | 变更 |
+|------|------|
+| `src/.../prompts/evolve_skill.md` | heartbeat prompt 指向 secskill-evo-neo |
+| `docs/cao-evo-flow.md` | 13 处 secskill-evo → secskill-evo-neo |
+| `docs/cao-code-map.md` | evo-skills 目录树更新，evolve_skill.md 引用更新 |
+
+### 22.4 未修改（无需修改）
+
+- `cao-bridge/opencode/install.sh` — 通配符 `evo-skills/*/` 自动拾取
+- `cao-bridge/claude-code/install.sh` — 同上
+- 代码注释中的 "e.g. secskill-evo"（`.py`, `.ts`, `.sh`）— 仅示例性引用
+- `docs/archive/*` — 历史记录，不改
+
+**状态**：✅ 完成
+
+---
+
+## 步骤 22.1：secskill-gen-neo（保守技能生成 Skill）
+
+**目标**：从实战中沉淀可复用技能。agent 在多次探索（有成功有失败）后最终做成某件事，
+将成功方法提炼为可复用的 skill。核心理念：skill 不是自上而下设计的，而是自下而上
+从实践中沉淀的。
+
+**与 secskill-evo-neo 的关系**：evo-neo 修改已有 skill，gen-neo 创建新 skill。
+两者共享保守哲学——宁可不生成/不改，也不产出低质量的 skill。
+
+### 22.1.1 新增文件
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `evo-skills/secskill-gen-neo/SKILL.md` | 241 | 主指令：5 步流程（回顾→门控→提炼→审查→发布） |
+| `evo-skills/secskill-gen-neo/references/generation-gate.md` | 173 | 生成门控：泛化性、增量价值、粒度三级串行检查 |
+| `evo-skills/secskill-gen-neo/templates/skill-skeleton.md` | 79 | 生成 skill 的 SKILL.md 骨架模板 |
+| `src/.../prompts/generate_skill.md` | 30 | heartbeat prompt：持续高分时建议沉淀 skill |
+
+### 22.1.2 关键设计决策
+
+- **自下而上沉淀**：不是"我想要一个做 X 的 skill"（自上而下），而是"我做成了 X，方法值得沉淀"
+- **三级串行门控**：泛化性 → 增量价值 → 粒度，任一不通过则降级为 secnote
+- **secnote 是合法出口**：大多数触发应以"写 secnote 而非 skill"结束，这是正确的粒度选择
+- **heartbeat 集成**：`generate_skill` prompt 每 5 次评估触发（interval），skill 自身的门控确保不过度生成
+- **与 openspace-evo CAPTURED 独立共存**：gen-neo 有严格门控，CAPTURED 没有，定位不同
+
+### 22.1.3 更新的现有文件
+
+| 文件 | 变更 |
+|------|------|
+| `src/.../evolution/heartbeat.py` | DEFAULT_PROMPTS 新增 generate_skill；get_default_actions 新增 generate_skill（every=5, interval）；render_prompt 新增 local_eval_count 参数 |
+| `test/evolution/test_heartbeat.py` | test_defaults 更新为 5 个 action |
+| `docs/cao-code-map.md` | evo-skills 目录树 + prompts 列表更新 |
+| `docs/cao-evo-flow.md` | evo-skills 目录树 + 心跳 Prompt 类型总览表更新 |
+
+### 22.1.4 同步修正：secskill-evo-neo 证据门措辞
+
+将"双重证据门"（Dual Evidence Gate）修正为"串行证据门"（Sequential Evidence Gate）：
+- Gate 1（失败证据）不通过 → 直接停止
+- Gate 1 通过后才进入 Gate 2（改进证据）→ 不通过 → 停止
+- 涉及文件：secskill-evo-neo/SKILL.md、references/conservative-evolution.md
+
+**测试结果**：5/5 受影响测试通过
+
+**状态**：✅ 完成

@@ -11,8 +11,8 @@ Leaderboard: {leaderboard}
 
 ### Action
 
-Load and execute the **secskill-evo** skill (Evolution Mode) from your evolution skills directory.
-The skill is at: `evo-skills/secskill-evo/SKILL.md`
+Load and execute the **secskill-evo-neo** skill from your evolution skills directory.
+The skill is at: `evo-skills/secskill-evo-neo/SKILL.md`
 (or pulled into your local skills dir via `cao_pull_skills`)
 
 Pass this context to the skill:
@@ -22,7 +22,10 @@ Pass this context to the skill:
   Use the evolution signals and leaderboard above for details.
 - **Signals**: The full evolution signals JSON above.
 
-The skill will guide you through: judge → analyze → snapshot → improve → validate → commit.
+The skill enforces conservative evolution — changes require both failure evidence
+AND proof the fix generalizes. It may conclude that no skill change is needed (L0),
+which is a valid outcome.
+
 It uses `/tmp/cao-evo-workspace/` for safe isolation (won't pollute your git repo).
 
 ### After Evolution

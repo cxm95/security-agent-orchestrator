@@ -151,6 +151,10 @@ def _current_branch(cdir: Path) -> str:
 def init_client_repo(remote_url: str | None = None) -> Path:
     """Clone the Hub repo if not present; pull if it already exists.
 
+    If the directory exists but is not a git repo (e.g. created by mkdir -p
+    during a previous session), initializes git in-place and adds the remote,
+    preserving any existing files (notes, skills, state).
+
     Parameters
     ----------
     remote_url : str, optional
@@ -179,6 +183,43 @@ def init_client_repo(remote_url: str | None = None) -> Path:
         pull(cdir)
         logger.info("Pulled latest into %s", cdir)
         return cdir
+
+    # Directory exists but is NOT a git repo — init in-place and pull.
+    # This happens when the dir was created by mkdir -p (e.g. session_manager
+    # or install scripts) before git clone had a chance to run.
+    if cdir.exists() and any(cdir.iterdir()):
+        logger.info("Directory %s exists but has no .git — initializing in-place", cdir)
+        try:
+            _git(cdir, "init")
+            _git(cdir, "config", "user.name", "cao-agent")
+            _git(cdir, "config", "user.email", "cao-agent@local")
+            _git(cdir, "remote", "add", "origin", url)
+            # Commit existing files so they're not lost on pull
+            _git(cdir, "add", "-A")
+            result = _git(cdir, "diff", "--cached", "--quiet", check=False)
+            if result.returncode != 0:
+                _git(cdir, "commit", "-m", "initial: existing local files")
+            # Try to pull remote content (may fail if remote is empty)
+            _git(cdir, "fetch", "origin", check=False)
+            # Try to set up tracking; handle both empty remote and populated remote
+            fetch_result = _git(cdir, "rev-parse", "origin/main", check=False)
+            if fetch_result.returncode == 0:
+                # Remote has a main branch — rebase local on top
+                _git(cdir, "rebase", "origin/main", check=False)
+                _git(cdir, "branch", "--set-upstream-to=origin/main", "main", check=False)
+            else:
+                # Remote might use 'master' or be empty
+                fetch_result = _git(cdir, "rev-parse", "origin/master", check=False)
+                if fetch_result.returncode == 0:
+                    _git(cdir, "rebase", "origin/master", check=False)
+                    _git(cdir, "branch", "--set-upstream-to=origin/master", check=False)
+                # else: remote is empty, local commits will be pushed as initial
+            _ensure_local_excludes(cdir)
+            logger.info("Initialized existing directory as git repo: %s", cdir)
+            return cdir
+        except subprocess.CalledProcessError as exc:
+            logger.error("In-place git init failed: %s", exc.stderr)
+            raise RuntimeError(f"In-place git init failed: {exc.stderr}") from exc
 
     # First-time clone (partial clone for efficiency)
     cdir.mkdir(parents=True, exist_ok=True)

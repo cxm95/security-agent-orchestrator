@@ -100,9 +100,9 @@ class TestHeartbeatConfig:
 
     def test_defaults(self):
         defaults = get_default_actions()
-        assert len(defaults) == 4
+        assert len(defaults) == 5
         names = {a["name"] for a in defaults}
-        assert names == {"reflect", "consolidate", "pivot", "evolve_skill"}
+        assert names == {"reflect", "consolidate", "pivot", "evolve_skill", "generate_skill"}
 
     def test_write_and_read(self):
         actions = [{"name": "reflect", "every": 2, "trigger": "interval"}]

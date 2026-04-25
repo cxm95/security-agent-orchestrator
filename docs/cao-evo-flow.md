@@ -75,7 +75,7 @@ Evolution 系统受 CORAL 启发，核心原则：
                      │
  ⓓ 如果 feedback_md_path 非空:
        Agent 读 evolve_from_feedback.md
-         → 调 secskill-evo (Evolution Mode)
+          → 调 secskill-evo-neo
            · fp 实例 → negative fixtures
            · tp 实例 → regression fixtures
          → 新 skill 版本就位
@@ -142,10 +142,19 @@ Evolution 使用两层 prompt 设计，分离调度与执行：
 
 ```
 evo-skills/
-├── secskill-evo/          # 安全技能进化（主要）
+├── secskill-evo-neo/      # 安全技能进化（保守进化，替代 secskill-evo）
+│   ├── SKILL.md
+│   ├── agents/judge.md    # LLM-as-Judge（binary + soft score + root cause）
+│   ├── references/        # conservative-evolution.md, schemas.md
+│   └── scripts/           # git_version.py（/tmp 隔离工作区）
+├── secskill-evo/          # [legacy] 原技能进化（Create + Evolution 双模式）
 │   ├── SKILL.md
 │   ├── agents/            # analyzer, comparator, judge, grader.md
 │   └── references/        # schemas.md
+├── secskill-gen-neo/      # 技能生成（从实战沉淀，保守生成门控）
+│   ├── SKILL.md
+│   ├── references/        # generation-gate.md
+│   └── templates/         # skill-skeleton.md
 ├── security-grader/       # 通用安全评分 Skill（grader_skill 引用）
 │   └── SKILL.md
 ├── cao-reflect/           # 反思总结
@@ -298,7 +307,7 @@ last_updated: "2026-04-15T10:00:00Z"
 │                                                                      │
 │  Agent 端:                                                           │
 │    → 从 ScoreResponse 取出 heartbeat_prompts                        │
-│    → prompt 指向特定 evo-skill（如 secskill-evo, cao-reflect）       │
+│    → prompt 指向特定 evo-skill（如 secskill-evo-neo, cao-reflect）       │
 │    → 加载 SKILL.md → 在隔离工作区执行进化                             │
 │    → 完成后 git push / cao_sync 回 Hub                               │
 │    → 再次 cao_report_score → 回到 Phase 4 形成闭环                   │
@@ -442,7 +451,8 @@ API 入口: api/evolution_routes.py:submit_score()  (行 261)
 
 | Prompt Key | 模板文件 | 触发条件 | 分发到 |
 |---|---|---|---|
-| `evolve_skill` | `prompts/evolve_skill.md` | Plateau（N 次无提升） | `evo-skills/secskill-evo/` |
+| `evolve_skill` | `prompts/evolve_skill.md` | Plateau（N 次无提升） | `evo-skills/secskill-evo-neo/` |
+| `generate_skill` | `prompts/generate_skill.md` | 每 5 次评估（interval） | `evo-skills/secskill-gen-neo/` |
 | `reflect` | `prompts/reflect.md` | 每次评估后 / 提升后 | `evo-skills/cao-reflect/` |
 | `consolidate` | `prompts/consolidate.md` | 多 Agent 同任务，定期 | `evo-skills/cao-consolidate/` |
 | `pivot` | `prompts/pivot.md` | 扩展 Plateau（2× 阈值） | `evo-skills/cao-pivot/` |
@@ -491,7 +501,7 @@ Agent 在 `ScoreResponse` 中收到 `heartbeat_prompts` 后：
 Agent 收到 ScoreResponse.heartbeat_prompts
   │
   ▼
-读取 prompt: "加载 evo-skills/secskill-evo/SKILL.md"
+读取 prompt: "加载 evo-skills/secskill-evo-neo/SKILL.md"
   │
   ▼
 SKILL.md 执行步骤:
@@ -528,7 +538,7 @@ Agent 可通过不同方式处理心跳：
 | **Plugin 路径** | Plugin 轮询心跳，注入 prompt 到 Agent 上下文 |
 | **Skill 路径** | Agent 在 SKILL.md 指引下主动检查心跳响应 |
 
-### 6.4 人工反馈驱动的进化流（feedback-fetch → secskill-evo）
+### 6.4 人工反馈驱动的进化流（feedback-fetch → secskill-evo-neo）
 
 人工标注是**异步就绪**的 —— Agent 上报疑点后，标注可能数分钟到数天才到达。
 不能阻塞 Agent 等待，也不能把"有没有标注"塞进 `cao_report_score` 的同步返回。
@@ -541,7 +551,7 @@ Agent 可通过不同方式处理心跳：
 | `cao_submit_report` (MCP) | `cao-bridge/cao_bridge_mcp.py` | POST `/evolution/{task}/reports`，返回后把 `report_id` 追加到本地登记簿 |
 | `cao_fetch_feedbacks` (MCP) | 同上 | 扫登记簿里的 pending，GET `/reports/{id}/result`，落盘 + 渲染 md |
 | `report_registry.py` | `cao-bridge/` | `registry.json` 的 flock 读写 (add / list_pending / mark_annotated / mark_consumed) |
-| `feedback-fetch` skill | `evo-skills/feedback-fetch/SKILL.md` | 指导 agent 何时调 MCP、如何把产物交给 `secskill-evo` |
+| `feedback-fetch` skill | `evo-skills/feedback-fetch/SKILL.md` | 指导 agent 何时调 MCP、如何把产物交给 `secskill-evo-neo` |
 | `evolve_from_feedback.md` 模板 | `evo-skills/feedback-fetch/templates/` | 渲染结果文件的骨架，跟 skill 走（不嵌在 MCP 代码里） |
 | `.git/info/exclude` (agent 侧) | `<session_dir>/.git/info/exclude` | 自动追加 `reports/` + `.session.json`，本地运行时状态不入共享 repo |
 
@@ -576,7 +586,7 @@ Agent 可通过不同方式处理心跳：
           │                                 │                         │
   ⓓ 若 feedback_md_path 非空:                │                         │
      → 读 md                                 │                         │
-     → 加载 secskill-evo (Evolution Mode)    │                         │
+     → 加载 secskill-evo-neo                    │                         │
        · verdict=fp 实例 → 负例                                        │
        · verdict=tp 实例 → 回归例                                      │
        · verdict=uncertain → 不做硬约束                                │
@@ -618,7 +628,7 @@ Agent 可通过不同方式处理心跳：
 | `{task_ids}` | 涉及的 task 列表（逗号分隔） |
 | `{report_ids}` | 涉及的 report_id（逗号分隔） |
 | `{entries_markdown}` | 每个 report 的一行 markdown 列表 |
-| `{payloads_json}` | 所有标注原始 JSON（供 secskill-evo 直接消费） |
+| `{payloads_json}` | 所有标注原始 JSON（供 secskill-evo-neo 直接消费） |
 
 ---
 
@@ -767,10 +777,10 @@ Hub 侧 checkpoint() → _sync_remote() → git pull
 
 #### 8.2.2 Evo-Skill（进化技能，`evo-skills/` 目录）
 
-Evo-skill 是预定义的进化指令集，由 `secskill-evo` 负责在 Agent 端侧进化：
+Evo-skill 是预定义的进化指令集，由 `secskill-evo-neo` 负责在 Agent 端侧进化：
 
 ```
-secskill-evo 触发（plateau 检测）
+secskill-evo-neo 触发（plateau 检测）
   │
   ▼
 Step 1: 创建隔离工作区
@@ -798,7 +808,7 @@ Step 7: 继续主任务，cao_report_score → 闭环
 |------|--------------------------|----------------------|
 | **存储位置** | 项目仓库 `evo-skills/` 目录 | Hub `.cao-evolution/skills/` |
 | **创建方式** | 开发者预定义 | Agent 通过 API 创建 |
-| **进化方式** | `secskill-evo` 在隔离工作区迭代 | 创建新版本覆盖旧版本 |
+| **进化方式** | `secskill-evo-neo` 在隔离工作区迭代 | 创建新版本覆盖旧版本 |
 | **分发方式** | 项目仓库 clone / 心跳 prompt 引用 | Hub API / git sync |
 | **用途** | 指导 Agent 执行进化操作 | 可复用的知识片段/工具 |
 
@@ -987,7 +997,7 @@ Agent 端通过 Bridge MCP 访问 Hub，以下为 Agent 可调用的工具：
 
 ```bash
 mkdir -p evo-skills/my-new-evo/
-# 编写 SKILL.md，参考 evo-skills/secskill-evo/SKILL.md 的结构
+# 编写 SKILL.md，参考 evo-skills/secskill-evo-neo/SKILL.md 的结构
 ```
 
 **Step 2 — 创建 Hub 侧分发模板：**

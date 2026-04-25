@@ -1,8 +1,10 @@
 ---
 name: cao-build-l1-secindex
 description: >
-  Build or incrementally update the L1 Security Hunting Briefing from sec-* notes.
-  Compact index (≤600 tokens, hard cap 800) injected into agent context at session start.
+  Build or incrementally update the L1 Security Hunting Index from sec-* notes.
+  Compact pointer index (≤600 tokens, hard cap 1000) injected into agent context
+  at session start. Each entry is a one-line hook that guides agents to read the
+  full note when relevant.
   Triggers on: "build security index", "update security index",
   "构建安全索引", "更新安全索引".
 triggers:
@@ -15,140 +17,151 @@ triggers:
 # Build L1 Security Hunting Index
 
 Read `sec-*.md` notes from the session notes directory, and build or
-incrementally update a compact hunting briefing at `<session_dir>/sec-index.md`.
+incrementally update a compact hunting index at `<session_dir>/sec-index.md`.
 Then push via `cao_push` so other agent instances get the updated index.
 
-The index is NOT a vulnerability report. It is a **hunting guide** — it tells
-the next agent where to look, what works, what to skip, and what traps to avoid.
+The index is NOT a vulnerability report or a summary. It is a **pointer layer**
+— each entry is a one-line hook that tells the agent "when you encounter this
+situation, go read the full note". Agents use `cao_fetch_document` or
+`cao_search_knowledge` to get details.
 
 ## Token Budget
 
 - Target: ≤600 tokens
-- Hard cap: 800 tokens
-- Format: one line per item, no paragraphs, no explanations
-- The index is a pointer layer — agents use `cao_search_knowledge` for details
+- Hard cap: 1000 tokens
+- Format: one entry per line, each entry = hook sentence → note filename
+- Do NOT write full conclusions — write hooks that trigger agents to read more
 
-When the index exceeds 800 tokens, compress:
-1. Merge same-category items into a single line (e.g., "3 SQLi in search endpoints: UserCtrl, ProductCtrl, OrderCtrl")
-2. Drop note filename references (agents can search by keyword)
-3. Collapse Pitfalls and Cold Zones to comma-separated lists
+When the index exceeds 1000 tokens, compress:
+1. Merge same-category vuln entries (e.g., "搜索类接口容易出现JPQL注入，案例见 → note1, note2")
+2. Drop oldest dead-end entries first (least likely to be re-encountered)
+3. Keep all insight and recon entries (highest reuse value)
 
 ## Index Structure
+
+Sections align directly with secnote types. Plus one cross-note section (Chains).
 
 ```markdown
 ---
 generated: {ISO 8601 timestamp}
 indexed_notes: [{list of sec-*.md filenames already indexed}]
 ---
-# Sec Hunting Briefing ({N} notes)
+# Sec Hunting Index ({N} notes)
 
-## Architecture
-{From insight notes. Key architectural facts with security relevance.
- One bullet per fact. Max 5 bullets.}
+## Vulns
+{From vuln notes. Pattern-level hooks — what type of component/interface
+ is prone to what type of vulnerability. NOT specific findings.}
 
-## Hot Zones
-{From vuln notes — NOT the vulns themselves, but areas where similar
- patterns likely exist. One bullet per zone. Max 5 bullets.}
+## Insights
+{From insight notes. Architectural or design discoveries with security
+ relevance. State the discovery, point to details.}
 
-## Tips & Tricks
-{From technique/insight/vuln notes. Interesting discoveries, small tricks,
- and experience that help hunt more effectively. Max 4 bullets.}
+## Techniques
+{From technique notes. When you need to achieve X, here's a proven approach.}
+
+## Dead Ends
+{From dead-end notes. Advise against specific attempts that have been
+ confirmed fruitless.}
+
+## Recon
+{From recon notes. Areas with undocumented or hidden attack surface.}
 
 ## Chains
-{Cross-note connections: partial findings that combine into higher impact.
- One bullet per chain. Max 3 bullets.}
+{Cross-note inference. Partial findings from different notes that may
+ combine into higher-impact attacks.}
 
-## Pitfalls
-{From dead-end notes. Specific approaches/methods that failed or wasted time.
- Saves others from repeating the same mistakes. Max 4 bullets.}
-
-## Cold Zones
-{From dead-end notes. Areas confirmed well-defended — skip entirely.
- One bullet per zone. Max 4 bullets.}
+---
+以上为历史经验索引，仅供参考。请专注于当前任务目标，只在以下情况
+获取note详情：(1) 当前正在审计的组件/模式与某条索引直接相关；
+(2) 即将尝试的方法已被Dead Ends标记。不要主动拉取所有note。
 ```
 
 Sections with zero items: omit entirely (don't write empty headers).
+The trailing guidance block is MANDATORY — always append it after the last section.
 
-## Section Rules
+## Entry Format by Type
 
-### Architecture (source: `insight` notes)
+Each entry is one line: a hook sentence followed by `→ {note filename}`.
 
-Extract structural facts that affect how to attack:
-- Auth mechanism and where it's enforced
-- ORM/query patterns (parameterized? raw concat?)
-- Serialization formats and where they're used
-- Trust boundaries between components
-- Framework-specific behaviors (filter ordering, path normalization)
+The hook must give enough context for the agent to judge relevance to their
+current task, but must NOT give the full conclusion — the goal is to drive
+the agent to read the original note.
 
-DO NOT include: framework versions, dependency lists, or anything
-observable from pom.xml/build.gradle without security relevance.
+### Vulns
 
-### Hot Zones (source: `vuln` notes)
+Style: `{组件类型/模式}容易出现{漏洞类型}，案例见`
 
-A confirmed vuln means the PATTERN likely exists elsewhere. Extract:
-- The vulnerable pattern (not the specific vuln)
-- Where else the same pattern appears
-- Why this zone is "hot" (what to grep for)
+The hook describes the PATTERN, not the specific instance. When an agent
+encounters a similar component, the hook triggers them to read the case study.
 
-Example:
-- `Search endpoints: raw JPQL concat (UserCtrl confirmed → check ProductCtrl, OrderCtrl)`
+Examples:
+- `搜索类接口容易出现JPQL注入，案例见 → sec-vuln-user-controller-sqli-20260424-1530.md`
+- `CRUD接口容易出现IDOR，案例见 → sec-vuln-order-controller-idor-20260424-1625.md`
 
-NOT: `[HIGH] SQLi in UserController.searchUsers` — that's a finding, not a zone.
+NOT: `UserController.searchUsers存在SQL注入` — that's a finding, not a hook.
 
-### Tips & Tricks (source: `technique` + `insight` + `vuln` notes)
+### Insights
 
-Interesting discoveries, small tricks, and experience-based advice that help
-other agents hunt more effectively on THIS specific target. Broader than
-"techniques" — captures any useful knowledge nugget worth sharing.
+Style: `{发现了什么}，详情见`
 
-Include:
-- Non-obvious approaches that yielded results
-- Shortcuts or patterns specific to this codebase
-- Observations that change how you'd approach the target
+State the discovery as a fact. Don't explain the full implication — let the
+agent read the note for that.
 
-Example:
-- `Trace RedisTemplate serializer config → hidden deserialization surfaces`
-- `/api/public/../{path} bypasses URI-prefix auth filters (normalization after filter)`
+Examples:
+- `Spring路径归一化发生在filter chain之后，详情见 → sec-insight-auth-filter-path-norm-20260424-1545.md`
+- `Redis session使用了Java原生序列化，详情见 → sec-insight-session-redis-20260424-1620.md`
 
-NOT: `Used sqlmap` — that's a tool, not a trick.
-NOT: `Read the source code carefully` — that's generic advice, not target-specific.
+NOT: `当审计auth filter时，path normalization发生在filter之后，/api/public/../可绕过` — too much detail, agent won't read the note.
 
-### Chains (source: cross-note inference)
+### Techniques
 
-Look across ALL notes for partial findings that could combine:
-- Agent A found X + Agent B found Y → together they might enable Z
+Style: `要{达成某目标}时，参考`
 
-Example:
-- `AuthFilter path bypass (agent-01) + AdminController no extra auth check (agent-02) → unauthenticated admin access? (unverified)`
+Describe the goal/scenario, not the method. The method is in the note.
 
-Only include chains where the combination is non-obvious. If it's obvious
-from a single note, it belongs in that note's Suggested Action, not here.
+Examples:
+- `要找隐藏的反序列化攻击面时，参考 → sec-technique-redis-deser-20260424-1600.md`
+- `要绕过基于URI前缀的认证检查时，参考 → sec-technique-path-norm-bypass-20260424-1700.md`
 
-### Pitfalls (source: `dead-end` + `technique` notes)
+NOT: `追踪RedisTemplate的serializer配置可以找到反序列化面` — that gives away the technique.
 
-Specific approaches, methods, or assumptions that FAILED or WASTED TIME.
-Different from Cold Zones — Pitfalls are about HOW you attacked (method),
-Cold Zones are about WHERE you attacked (area).
+### Dead Ends
 
-Include:
-- Approaches that looked promising but hit a wall (and why)
-- Common assumptions about this target that turn out to be wrong
-- Time sinks that other agents should skip
+Style: `不建议{尝试某事}，原因见`
 
-Example:
-- `DNS rebinding against ImageProxy fails: validation and fetch reuse same resolved IP`
-- `Don't assume /actuator is exposed — Spring Boot actuator is disabled in prod profile`
+Directly advise against the attempt. The agent reads the note only if they
+were about to try the same thing.
 
-NOT: `Testing took a long time` — that's a complaint, not a pitfall.
+Examples:
+- `不建议对ImageProxyService尝试SSRF，原因见 → sec-deadend-image-proxy-ssrf-20260424-1615.md`
+- `不建议尝试/actuator端点探测，原因见 → sec-deadend-actuator-disabled-20260424-1700.md`
 
-### Cold Zones (source: `dead-end` notes)
+NOT: `ImageProxyService有域名白名单+禁止重定向+content-type校验` — that's the conclusion, not a hook.
 
-Areas confirmed well-defended. One line: component + why it's cold.
-Different from Pitfalls — Cold Zones are about WHERE (the area is locked down),
-Pitfalls are about HOW (the method doesn't work).
+### Recon
 
-Example:
-- `ImageProxyService SSRF: whitelist + no redirect + content-type check`
+Style: `{区域}存在未文档化攻击面，详情见`
+
+Signal that hidden attack surface exists in an area. The agent reads the note
+to get the specific endpoints and entry points.
+
+Examples:
+- `/internal/*存在独立未认证攻击面，详情见 → sec-recon-internal-api-dispatcher-20260424-1630.md`
+- `MQ消息监听器存在未验证的数据入口，详情见 → sec-recon-mq-listeners-20260424-1700.md`
+
+NOT: `/internal/*有4个无认证端点(cache/flush, user/merge, config/dump, job/trigger)` — too detailed for an index.
+
+### Chains
+
+Style: `{发现A} + {发现B}，可能存在关联，见`
+
+Point to multiple notes whose findings may combine. The chain hypothesis
+itself is the hook.
+
+Examples:
+- `AuthFilter路径绕过 + /internal/*无认证，可能存在关联，见 → sec-insight-auth-filter-path-norm-20260424-1545.md, sec-recon-internal-api-dispatcher-20260424-1630.md`
+
+Only include chains where the combination is non-obvious.
 
 ## Process
 
@@ -173,35 +186,45 @@ and STOP. Do not rewrite the index unnecessarily.
 ### Step 3: Read New Notes
 
 Read only the new `sec-*.md` files. For each, extract:
-- `type` from frontmatter (vuln, insight, technique, dead-end)
+- `type` from frontmatter (vuln, insight, technique, dead-end, recon)
 - `target` from frontmatter
 - `category` from frontmatter (if present)
-- The Evidence and Implication sections (key content)
+- The title line (# [...] one-line summary)
 
-### Step 4: Merge into Index
+These fields are sufficient to write the hook. Do NOT summarize the Evidence
+or Implication sections — that defeats the purpose of the pointer layer.
 
-For each new note, update the appropriate section:
+### Step 4: Write Hook Entry
 
-| Note type | Updates sections |
-|-----------|-----------------|
-| `insight` | Architecture, Tips & Tricks |
-| `vuln` | Hot Zones, Tips & Tricks, Chains |
-| `technique` | Tips & Tricks, Pitfalls |
-| `dead-end` | Pitfalls, Cold Zones |
+For each new note, write one hook entry following the format rules above.
+Place it in the matching section:
+
+| Note type | Section |
+|-----------|---------|
+| `vuln` | Vulns |
+| `insight` | Insights |
+| `technique` | Techniques |
+| `dead-end` | Dead Ends |
+| `recon` | Recon |
+
+Then scan across ALL indexed notes for potential Chains (cross-note combinations).
+
+### Step 5: Merge into Index
 
 Merge rules:
-- If a bullet for the same target/component already exists, UPDATE it (don't duplicate)
-- If adding a bullet would exceed the section's max count, merge related items
+- If a hook for the same target/component already exists, UPDATE it (don't duplicate)
+- If two vuln notes describe the same pattern in different components, merge:
+  `搜索类接口容易出现JPQL注入，案例见 → note1, note2`
 
-### Step 5: Check Token Budget
+### Step 6: Check Token Budget
 
-Estimate the index size. If it exceeds ~800 tokens:
-1. Merge same-category bullets: "3 SQLi in search endpoints: UserCtrl, ProductCtrl, OrderCtrl"
-2. Drop filename references
-3. Collapse Pitfalls and Cold Zones into comma-separated lists
-4. Trim Tips & Tricks to top 3 most impactful items
+Estimate the index size. If it exceeds ~1000 tokens:
+1. Merge same-pattern vuln entries into one line with multiple note refs
+2. Drop oldest dead-end entries first
+3. Keep all insight and recon entries (highest cross-task reuse value)
+4. Collapse chains to top 2 most impactful
 
-### Step 6: Write and Push
+### Step 7: Write and Push
 
 Write the updated index to `<session_dir>/sec-index.md`.
 Update the `generated` timestamp and `indexed_notes` list in frontmatter.
@@ -210,10 +233,10 @@ Update the `generated` timestamp and `indexed_notes` list in frontmatter.
 cao_push(message="secindex: updated with N new notes (total M)")
 ```
 
-### Step 7: Report
+### Step 8: Report
 
 Output a one-line summary:
-"Security hunting index updated: +{new} notes, {total} indexed. {brief description of what changed}."
+"Security hunting index updated: +{new} notes, {total} indexed."
 
 Then resume your main task.
 
@@ -229,33 +252,35 @@ indexed_notes:
   - sec-deadend-image-proxy-ssrf-20260424-1615.md
   - sec-insight-session-redis-20260424-1620.md
   - sec-vuln-order-controller-idor-20260424-1625.md
+  - sec-recon-internal-api-dispatcher-20260424-1630.md
 ---
-# Sec Hunting Briefing (6 notes)
+# Sec Hunting Index (7 notes)
 
-## Architecture
-- Auth: JWT via AuthFilter, path-prefix skip for /api/public/* (normalization after filter)
-- ORM: JPQL via EntityManager, no global parameterized query enforcement
-- Session: Redis + JdkSerializationRedisSerializer (Java native serialization)
+## Vulns
+- 搜索类接口容易出现JPQL注入，案例见 → sec-vuln-user-controller-sqli-20260424-1530.md
+- CRUD接口容易出现IDOR，案例见 → sec-vuln-order-controller-idor-20260424-1625.md
 
-## Hot Zones
-- Search endpoints: raw JPQL concat (UserCtrl confirmed → ProductCtrl, OrderCtrl same pattern)
-- Access control: OrderController uses user-supplied ID without ownership check → other CRUD controllers?
+## Insights
+- Spring路径归一化发生在filter chain之后，详情见 → sec-insight-auth-filter-path-norm-20260424-1545.md
+- Redis session使用了Java原生序列化，详情见 → sec-insight-session-redis-20260424-1620.md
 
-## Tips & Tricks
-- Trace RedisTemplate serializer config → hidden deserialization surfaces
-- /api/public/../{path} bypasses URI-prefix auth filters (normalization after filter)
-- Check @PreAuthorize for object-level vs field-level permission gaps
+## Techniques
+- 要找隐藏的反序列化攻击面时，参考 → sec-technique-redis-deser-20260424-1600.md
+
+## Dead Ends
+- 不建议对ImageProxyService尝试SSRF，原因见 → sec-deadend-image-proxy-ssrf-20260424-1615.md
+
+## Recon
+- /internal/*存在独立未认证攻击面，详情见 → sec-recon-internal-api-dispatcher-20260424-1630.md
 
 ## Chains
-- AuthFilter path bypass + AdminController (no extra auth) → unauthenticated admin access? (unverified)
-- Redis session deser + session fixation → potential RCE chain (unverified)
+- AuthFilter路径绕过 + /internal/*无认证，可能存在关联，见 → sec-insight-auth-filter-path-norm-20260424-1545.md, sec-recon-internal-api-dispatcher-20260424-1630.md
+- Redis session反序列化 + session fixation，可能存在关联，见 → sec-insight-session-redis-20260424-1620.md, sec-technique-redis-deser-20260424-1600.md
 
-## Pitfalls
-- DNS rebinding against ImageProxy fails: validation and fetch reuse same resolved IP
-- Don't assume /actuator is exposed — disabled in prod profile (checked application-prod.yml)
-
-## Cold Zones
-- ImageProxyService SSRF: domain whitelist + no redirect + content-type check
+---
+以上为历史经验索引，仅供参考。请专注于当前任务目标，只在以下情况
+获取note详情：(1) 当前正在审计的组件/模式与某条索引直接相关；
+(2) 即将尝试的方法已被Dead Ends标记。不要主动拉取所有note。
 ```
 
-This example is ~350 tokens — well within budget with room to grow.
+This example is ~330 tokens — well within budget with room for 20+ more notes.

@@ -39,7 +39,8 @@ src/cli_agent_orchestrator/          (~10000行)
 │   ├── grader_base.py               [~148行] GraderBase 抽象基类（保留向后兼容）
 │   ├── reports.py                   进化报告生成
 │   └── prompts/                     Hub 侧调度模板（heartbeat.py 加载）
-│       ├── evolve_skill.md          → 调度 secskill-evo
+│       ├── evolve_skill.md          → 调度 secskill-evo-neo
+│       ├── generate_skill.md       → 调度 secskill-gen-neo
 │       ├── reflect.md               → 调度 cao-reflect
 │       ├── consolidate.md           → 调度 cao-consolidate
 │       ├── pivot.md                 → 调度 cao-pivot
@@ -84,12 +85,21 @@ agent_store/                         内置 Agent Profile（随包分发）
 └── root_orchestrator.md             Root Orchestrator — L1 Index Builder
 
 evo-skills/                          平台无关的进化 Skill
-├── secskill-evo/                    核心 Skill 进化（FIX 算法）
+├── secskill-evo-neo/                Skill 进化（保守进化，替代 secskill-evo）
+│   ├── SKILL.md                     主指令（纯 Evolution Mode）
+│   ├── agents/judge.md              LLM-as-Judge（binary + soft score + root cause）
+│   ├── references/                  conservative-evolution.md, schemas.md
+│   └── scripts/git_version.py       Git 版本管理（/tmp 隔离工作区）
+├── secskill-evo/                    [legacy] 原 Skill 进化（Create + Evolution 双模式）
 │   ├── SKILL.md                     主指令
 │   ├── agents/                      子 Agent 指令（grader, judge, analyzer, comparator）
 │   ├── scripts/                     Python 工具（git_version, run_loop 等）
 │   ├── references/schemas.md        JSON Schema 参考
 │   └── assets/eval_review.html      基准测试可视化
+├── secskill-gen-neo/                Skill 生成（从实战沉淀，保守生成门控）
+│   ├── SKILL.md                     主指令（5 步：回顾→门控→提炼→审查→发布）
+│   ├── references/generation-gate.md 生成门控（泛化性、增量价值、粒度）
+│   └── templates/skill-skeleton.md  生成 skill 的骨架模板
 ├── security-grader/SKILL.md         通用安全评分 Skill（grader_skill 引用目标）
 ├── openspace-evo/SKILL.md           OpenSpace 风格进化（DERIVED + CAPTURED + 谱系）
 ├── cao-reflect/SKILL.md             结构化反思 -> note 生成
