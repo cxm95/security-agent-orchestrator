@@ -203,20 +203,58 @@ def allow():
 def poll_or_allow(terminal_id: str, hook_input: dict):
     """Poll Hub; if a task is pending, inject it as the next turn.
 
-    We intentionally do **not** early-return on ``stop_hook_active``:
-    the whole point of this hook is to drain the Hub's work queue by
-    chaining block-decisions (the heartbeat flow in this same file
-    already relies on multi-block continuations).  Hub ``consume_pending_input``
-    pops the queue on read, so repeat polls never see the same task
-    twice — an infinite loop would require the Hub to actively
-    re-queue work each cycle, which is not how it works.
+    Before polling, pull the latest shared skills from the evolution
+    repo so the agent picks up any skills evolved by other agents.
     """
     _ = hook_input  # reserved for future per-chain limits
+    _pull_shared_skills()
     task = poll_hub_for_task(terminal_id)
     if task:
         block(task)
         return
     allow()
+
+
+def _pull_shared_skills():
+    """Git-pull the evolution repo and copy cao-* skills to ~/.claude/skills/.
+
+    Best-effort: failures are logged but never block the hook.
+    """
+    import shutil
+    import subprocess
+
+    client_dir = Path(
+        os.environ.get("CAO_CLIENT_DIR", str(Path.home() / ".cao-evolution-client"))
+    )
+    src_skills = client_dir / "skills"
+    claude_skills = Path.home() / ".claude" / "skills"
+
+    try:
+        if (client_dir / ".git").exists():
+            subprocess.run(
+                ["git", "-C", str(client_dir), "pull", "--rebase"],
+                capture_output=True, timeout=30, check=False,
+            )
+    except Exception:
+        dbg("_pull_shared_skills: git pull failed")
+        return
+
+    if not src_skills.exists():
+        return
+    try:
+        claude_skills.mkdir(parents=True, exist_ok=True)
+        for child in src_skills.iterdir():
+            if not (child.is_dir() and child.name.startswith("cao-")):
+                continue
+            if not (child / "SKILL.md").exists():
+                continue
+            dest = claude_skills / child.name
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(child, dest)
+            dbg(f"_pull_shared_skills: synced {child.name}")
+    except Exception:
+        dbg("_pull_shared_skills: copy failed")
 
 
 def main():

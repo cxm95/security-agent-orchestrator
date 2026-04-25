@@ -775,7 +775,28 @@ Hub 侧 checkpoint() → _sync_remote() → git pull
 
 > **注意**：`cao_share_skill` MCP 工具已移除。Hub 内部仍可通过 HTTP POST 创建 skill。
 
-#### 8.2.2 Evo-Skill（进化技能，`evo-skills/` 目录）
+#### 8.2.2 Skill 自动收编（Auto-Adopt）
+
+非 `cao-` 前缀的本地 skill 默认不参与共享同步。`push_repo()` 在每次 push 前
+自动调用 `_auto_adopt_skills()`，将符合条件的本地 skill 复制一份并加上 `cao-` 前缀，
+使其进入共享管线：
+
+```
+cao_push / push_repo()
+  │
+  ├─ _auto_adopt_skills(local_dir)
+  │    遍历 local_dir 下的非 cao- 目录
+  │    ├─ 跳过: 无 SKILL.md、已有 cao- 前缀、本地已存在 cao-X、clone 已存在 cao-X
+  │    └─ 复制: my-scanner/ → cao-my-scanner/（原始保留不动）
+  │
+  ├─ import_local_skills(local_dir)  ← cao-* 镜像到 git clone
+  │
+  └─ git push
+```
+
+也可通过 `cao_adopt_skill` MCP 工具显式收编，支持自定义名称。
+
+#### 8.2.3 Evo-Skill（进化技能，`evo-skills/` 目录）
 
 Evo-skill 是预定义的进化指令集，由 `secskill-evo-neo` 负责在 Agent 端侧进化：
 
@@ -961,7 +982,7 @@ _SUBDIRS = ["tasks", "skills", "notes", "notes/_synthesis",
 
 > **已移除**：`cao_share_note`、`cao_share_skill`（Agent 通过 git push 写入知识）
 
-### 10.2 Bridge 侧工具（`cao_bridge_mcp.py`，16 个工具）
+### 10.2 Bridge 侧工具（`cao_bridge_mcp.py`，17 个工具）
 
 Agent 端通过 Bridge MCP 访问 Hub，以下为 Agent 可调用的工具：
 
@@ -983,6 +1004,7 @@ Agent 端通过 Bridge MCP 访问 Hub，以下为 Agent 可调用的工具：
 | **同步** | `cao_sync` | 双向同步（先 push 再 pull） |
 | | `cao_push` | 本地变更提交并 push 到 Hub |
 | | `cao_pull_skills` | 拷贝共享 skills 到本地 |
+| | `cao_adopt_skill` | 收编本地 skill 到共享管线（加 cao- 前缀） |
 | **Session** | `cao_session_info` | 查看当前 session 元数据（session_id, 目录, 状态） |
 
 > **已移除**：`cao_share_note`、`cao_share_skill`（改用 local write + `cao_push`）

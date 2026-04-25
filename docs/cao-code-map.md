@@ -107,8 +107,8 @@ evo-skills/                          平台无关的进化 Skill
 └── cao-pivot/SKILL.md               策略转向
 
 cao-bridge/                          远程 Agent 桥接实现
-├── cao_bridge_mcp.py                [~377行] MCP 桥接服务器（16 工具，含 cao_session_info）
-├── cao_bridge.py                    [~483行] 基础桥接模块（含 session 生命周期 + fetch_index）
+├── cao_bridge_mcp.py                [~458行] MCP 桥接服务器（17 工具，含 cao_adopt_skill / cao_session_info）
+├── cao_bridge.py                    [~733行] 基础桥接模块（含 session 生命周期 + fetch_index + skill adopt）
 ├── git_sync.py                      [~247行] Git 同步（session-aware）
 ├── session_manager.py               [~262行] Session 隔离管理（create/touch/deactivate/cleanup）
 ├── report_registry.py               [~132行] 本地报告登记簿（flock 保护）
@@ -486,7 +486,7 @@ evolution 层独立于 services 层，通过 evolution_routes.py 暴露给 HTTP/
 
 ---
 
-## Bridge MCP 工具 (cao_bridge_mcp.py, 16 个)
+## Bridge MCP 工具 (cao_bridge_mcp.py, 17 个)
 
 | 工具名 | 功能 |
 |--------|------|
@@ -505,6 +505,7 @@ evolution 层独立于 services 层，通过 evolution_routes.py 暴露给 HTTP/
 | `cao_sync` | 双向 Git 同步（push + pull） |
 | `cao_push` | Git add + commit + push |
 | `cao_pull_skills` | 拉取共享 skills |
+| `cao_adopt_skill` | 收编本地 skill 到共享管线（加 cao- 前缀） |
 | `cao_session_info` | 查看当前 session 元数据 |
 
 > **已移除** (Step 20): `cao_share_note`, `cao_share_skill` — 改为本地写入 + `cao_push`

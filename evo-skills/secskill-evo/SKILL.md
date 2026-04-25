@@ -500,11 +500,15 @@ python3 "$SCRIPTS_DIR/git_version.py" diff "$WORKSPACE" --from v{N} --to v{N+1}
 rsync -a --exclude='.git' "$WORKSPACE/" <skill-dir>/
 ```
 
-If running in CAO distributed mode, sync results:
-```bash
-cd ~/.cao-evolution-client && git add -A && git commit -m "evolve: <skill-name> v{N+1}" && git push
+If running in CAO distributed mode, sync results via MCP (this ensures
+`import_local_skills` mirrors the evolved skill into the git clone before push):
 ```
-Or call `cao_sync` via MCP.
+cao_push(message="evolve: <skill-name> v{N+1}")
+```
+
+Do NOT use `cd ~/.cao-evolution-client && git push` directly — the rsync
+target is the agent's local skills dir, not the git clone, so a direct
+push would miss the changes.
 
 Report: what was changed, why, and the before/after scores if validation was run.
 

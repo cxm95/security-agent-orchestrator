@@ -131,6 +131,13 @@ def register(ctx):
             except Exception:
                 logger.debug("Score report for heartbeat failed", exc_info=True)
 
+        # Pull latest shared skills so the next session starts up-to-date
+        try:
+            bridge.pull_repo()
+            _pull_skills_from_clone()
+        except Exception:
+            logger.debug("Post-push skill pull failed", exc_info=True)
+
         bridge.close_session()
 
     def pre_llm(messages, tools):
