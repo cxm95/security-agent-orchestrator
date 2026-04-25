@@ -65,6 +65,57 @@ elif is_local_only:
 RECALL_MODE = os.environ.get("CAO_RECALL_MODE", "full")
 
 
+def _l1_index_instruction() -> str:
+    """Build MCP instruction pointing agent to local L1 index files.
+
+    Instead of embedding index content (which goes stale when index is
+    rebuilt), we tell the agent where to find the files so it reads the
+    latest version at the start of each conversation.
+    """
+    from pathlib import Path
+
+    client_dir = Path(os.environ.get(
+        "CAO_CLIENT_DIR",
+        str(Path.home() / ".cao-evolution-client"),
+    ))
+
+    paths = []
+    for fname in ("sec-index.md", "index.md"):
+        fpath = client_dir / fname
+        if fpath.exists():
+            try:
+                content = fpath.read_text(encoding="utf-8").strip()
+                if content and "No index available" not in content:
+                    paths.append(str(fpath))
+            except Exception:
+                pass
+
+    if not paths:
+        return ""
+
+    files_list = ", ".join(paths)
+    return (
+        f"\n\nIMPORTANT: At the start of each conversation, read the L1 knowledge "
+        f"index file(s) for historical context: {files_list}. "
+        f"These contain prior findings, techniques, and dead-ends from previous "
+        f"sessions. Only fetch note details when an entry is directly relevant "
+        f"to your current task."
+    )
+
+
+# Build MCP instructions with L1 index file pointers
+_base_instructions = (
+    "CAO remote bridge. Use cao_register first, then cao_poll to check for tasks, "
+    "and cao_report to send back results."
+)
+_mcp_instructions = _base_instructions + _l1_index_instruction()
+
+mcp = FastMCP(
+    "cao-bridge",
+    instructions=_mcp_instructions,
+)
+
+
 def _read_hook_state_tid() -> str:
     """Read terminal_id from the SessionStart hook's state file.
 
@@ -88,14 +139,6 @@ def _read_hook_state_tid() -> str:
         return data.get("terminal_id", "")
     except Exception:
         return ""
-
-mcp = FastMCP(
-    "cao-bridge",
-    instructions=(
-        "CAO remote bridge. Use cao_register first, then cao_poll to check for tasks, "
-        "and cao_report to send back results."
-    ),
-)
 
 
 @mcp.tool()
